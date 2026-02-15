@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>Fluydo.AI – Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --azul-escuro: #0d2842;
+      --azul-principal: #1e40af;
+      --azul-claro: #3b82f6;
+      --azul-fundo: #eff6ff;
+      --azul-resposta: #93c5fd;
+      --preto: #111;
+      --cinza-texto: #3c3c3c;
+      --cinza-placeholder: #8696a0;
+      --branco: #fff;
+      --sombra: 0 1px 3px rgba(0,0,0,0.12);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: var(--azul-fundo);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      color: var(--cinza-texto);
+    }
+    .header {
+      background: var(--azul-principal);
+      color: var(--branco);
+      padding: 1rem 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      box-shadow: var(--sombra);
+    }
+    .header-avatar {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background: var(--azul-claro);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.1rem;
+    }
+    .header-titulo { font-size: 1.1rem; font-weight: 600; }
+    .header-slogan { font-size: 0.75rem; opacity: 0.95; font-style: italic; margin-top: 0.15rem; }
+    .chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      min-height: 200px;
+    }
+    .chat-inicio {
+      text-align: center;
+      color: var(--cinza-placeholder);
+      max-width: 320px;
+      margin: auto 0;
+    }
+    .chat-inicio .icone { font-size: 4rem; margin-bottom: 0.5rem; opacity: 0.6; }
+    .chat-inicio h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--azul-escuro);
+      margin-bottom: 0.35rem;
+    }
+    .chat-inicio p { font-size: 0.9rem; }
+    .balao {
+      max-width: 50ch;
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      font-size: 0.95rem;
+      align-self: flex-start;
+      word-break: break-word;
+      overflow-wrap: break-word;
+    }
+    .balao.user {
+      background: var(--azul-principal);
+      color: var(--branco);
+      font-weight: 500;
+    }
+    .balao.model {
+      margin-left: 1.25rem;
+      background: var(--azul-resposta);
+      color: var(--preto);
+      font-weight: 700;
+      border: 1px solid rgba(30, 64, 175, 0.2);
+    }
+    .balao.digitando { color: var(--cinza-placeholder); font-weight: 700; }
+    .chat-erro {
+      padding: 0.5rem 0.75rem;
+      background: #fef2f2;
+      color: #b91c1c;
+      border-radius: 8px;
+      font-size: 0.9rem;
+    }
+    .input-area {
+      padding: 0.75rem 1rem;
+      background: var(--branco);
+      border-top: 1px solid rgba(0,0,0,0.08);
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+    .input-area input {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      border: none;
+      border-radius: 24px;
+      background: var(--azul-fundo);
+      font-family: inherit;
+      font-size: 0.95rem;
+      outline: none;
+    }
+    .input-area input::placeholder { color: var(--cinza-placeholder); }
+    .input-area button {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: none;
+      background: var(--azul-principal);
+      color: var(--branco);
+      font-size: 1.4rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .input-area button:hover { background: var(--azul-escuro); }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-avatar">F</div>
+    <div>
+      <div class="header-titulo">Fluydo.AI</div>
+      <div class="header-slogan">Solução sob medida com agilidade digital</div>
+    </div>
+  </header>
+  <main class="chat" id="chat">
+    <div class="chat-inicio" id="chatInicio">
+      <div class="icone">💬</div>
+      <h2>Bem-vindo ao Fluydo.AI</h2>
+      <p>Digite uma mensagem abaixo para começar. Você pode encontrar produtos por Código, descrição ou medidas.</p>
+    </div>
+  </main>
+  <div class="input-area">
+    <input type="text" placeholder="Digite uma mensagem" id="mensagem" />
+    <button type="button" id="enviar" aria-label="Enviar">➤</button>
+  </div>
+  <script>
+    (function() {
+      var chat = document.getElementById('chat');
+      var chatInicio = document.getElementById('chatInicio');
+      var input = document.getElementById('mensagem');
+      var enviar = document.getElementById('enviar');
+      var historico = [];
+      var apiUrl = (window.location.port === '3080') ? 'http://localhost:3000/api/chat' : '/api/chat';
+
+      function addBalao(texto, tipo) {
+        chatInicio.style.display = 'none';
+        var div = document.createElement('div');
+        div.className = 'balao ' + tipo;
+        div.textContent = texto;
+        chat.appendChild(div);
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      function mostrarErro(msg) {
+        var div = document.createElement('div');
+        div.className = 'chat-erro';
+        div.textContent = msg;
+        chat.appendChild(div);
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      function removerDigitando() {
+        var el = document.querySelector('.balao.digitando');
+        if (el) el.remove();
+      }
+
+      enviar.onclick = function() {
+        var texto = (input.value || '').trim();
+        if (!texto) return;
+        input.value = '';
+        addBalao(texto, 'user');
+        historico.push({ role: 'user', parts: [{ text: texto }] });
+
+        var digitandoEl = document.createElement('div');
+        digitandoEl.className = 'balao model digitando';
+        digitandoEl.textContent = 'Digitando...';
+        chat.appendChild(digitandoEl);
+        chat.scrollTop = chat.scrollHeight;
+
+        fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: texto, history: historico.slice(0, -1) })
+        })
+          .then(function(res) { return res.json().then(function(data) { return { ok: res.ok, data: data }; }); })
+          .then(function(r) {
+            removerDigitando();
+            if (r.ok) {
+              addBalao(r.data.text, 'model');
+              historico.push({ role: 'model', parts: [{ text: r.data.text }] });
+            } else {
+              mostrarErro(r.data.error || 'Erro ao enviar mensagem');
+            }
+          })
+          .catch(function() {
+            removerDigitando();
+            var msg = document.createElement('div');
+            msg.className = 'chat-erro';
+            msg.innerHTML = 'O servidor do chat não está rodando.<br><br>' +
+              '1) Abra o CMD na pasta do projeto e rode: <strong>npm run dev</strong><br>' +
+              '2) Depois abra no navegador: <a href="http://localhost:3000" target="_blank" rel="noopener" style="color:#1e40af;font-weight:bold;">http://localhost:3000</a><br><br>' +
+              'Use esse endereço para o chat responder.';
+            chat.appendChild(msg);
+            chat.scrollTop = chat.scrollHeight;
+          });
+      };
+
+      input.onkeypress = function(e) {
+        if (e.key === 'Enter') enviar.click();
+      };
+    })();
+  </script>
+</body>
+</html>
