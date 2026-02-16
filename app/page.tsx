@@ -331,15 +331,13 @@ export default function ChatPage() {
             <img
               src="/LogoFluydo.png"
               alt="Fluydo.AI"
-              width={180}
-              height={44}
               style={styles.logo}
               onError={() => setLogoErro(true)}
             />
           )}
           <div style={styles.headerSlogan}>Solução sob medida com agilidade digital</div>
         </div>
-        <div style={styles.headerVersao}>Versão: 1.0.0</div>
+        <div style={styles.headerVersao}>Versão 1.0.1</div>
       </header>
 
       <main style={styles.chat}>
@@ -567,18 +565,24 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100vh',
   },
   header: {
-    background: 'var(--azul-principal)',
+    background: 'var(--azul-header)',
     color: 'var(--branco)',
-    padding: '1.5rem 1.25rem',
-    minHeight: 100,
+    padding: '1rem 1.25rem',
+    minHeight: 130,
     display: 'flex',
     flexDirection: 'row',
     alignItems: 'center',
     boxShadow: 'var(--sombra)',
   },
-  headerLogoWrap: { display: 'flex', flexDirection: 'column', gap: '0.5rem' },
-  logo: { objectFit: 'contain', height: 44, width: 'auto' },
-  logoTexto: { fontSize: '1.5rem', fontWeight: 700, color: 'var(--branco)' },
+  headerLogoWrap: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.35rem',
+    alignItems: 'flex-start',
+    alignSelf: 'flex-start',
+  },
+  logo: { objectFit: 'contain', height: 88, width: 'auto', display: 'block' },
+  logoTexto: { fontSize: '2rem', fontWeight: 700, color: 'var(--branco)' },
   headerSlogan: { fontSize: '0.85rem', fontWeight: 700 },
   headerVersao: { marginLeft: 'auto', fontSize: '0.8rem', opacity: 0.95 },
   chat: {

@@ -49,6 +49,9 @@ interface OpenAIMessage {
 
 const CART_ADD_REGEX = /CART_ADD:([^|\n]+)\|(\d+)/gi;
 const CPF_CNPJ_REGEX = /\b\d{11,14}\b/;
+/** Frase colocada em balão separado após resposta a pergunta com ? */
+const FRASE_VOLTANDO_PEDIDO = 'Mas, voltando ao seu pedido. Qual é o produto que devo procurar?';
+const FRASE_VOLTANDO_PEDIDO_REGEX = /Mas,?\s*voltando ao seu pedido\.?\s*Qual é o produto que devo procurar\??/i;
 
 export async function gerarRespostaChat(
   mensagem: string,
@@ -78,7 +81,8 @@ export async function gerarRespostaChat(
     .map((h) => h.parts.map((p) => p.text).join('\n'))
     .pop() || '';
 
-  const voltarAoMenu = /voltar ao menu|^menu$/i.test(msgTrimInicio);
+  // Frases reservadas: executadas a qualquer momento, sem validar contexto
+  const voltarAoMenu = /voltar\s*ao\s*menu|^menu$|^voltar$/i.test(msgTrimInicio);
   if (voltarAoMenu) {
     return {
       text: 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido',
@@ -86,16 +90,29 @@ export async function gerarRespostaChat(
     };
   }
 
-  const verPedido = /ver pedido|^pedido$/i.test(msgTrimInicio);
+  const verPedido = /^ver\s*pedido$|^pedido$|^ver$/i.test(msgTrimInicio);
   if (verPedido) {
     if (cart.length === 0) {
-      return { text: 'Não há pedido cadastrado.', cart };
+      return { text: 'Não há pedido pendente.', cart };
     }
     return {
       text: 'Segue seu pedido:',
       cart,
       exibirCarrinho: true,
       textoPergunta: '1 - Alterar o pedido\n2 - Procurar por outro produto',
+    };
+  }
+
+  const finalizarPedido = /^finalizar(\s*pedido)?$/i.test(msgTrimInicio);
+  if (finalizarPedido) {
+    if (cart.length === 0) {
+      return { text: 'Não há pedido pendente.', textoPergunta: 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido', cart };
+    }
+    return {
+      text: 'Segue seu pedido para conferência:',
+      cart,
+      exibirCarrinho: true,
+      textoPergunta: 'Está correto?\n1 - Alterar o pedido\n2 - Está correto, finalizar (informe CPF ou CNPJ)',
     };
   }
 
@@ -112,12 +129,77 @@ export async function gerarRespostaChat(
     };
   }
 
-  const excluirPedido = /^excluir(\s*pedido)?$|excluir\s*pedido/i.test(msgTrimInicio);
+  const excluirPedido = /^excluir(\s*pedido)?$/i.test(msgTrimInicio);
   if (excluirPedido) {
+    if (cart.length === 0) {
+      return { text: 'Não há pedido pendente.', cart };
+    }
     return {
       text: 'Excluir o pedido completo?',
       textoPergunta: '1 - Não\n2 - Sim',
+      cart,
+    };
+  }
+
+  const ajudaOuInterrogacao = msgTrimInicio === '?' || /^ajuda$/i.test(msgTrimInicio);
+  if (ajudaOuInterrogacao) {
+    return {
+      text: 'A qualquer momento você pode usar as palavras reservadas',
+      textoPergunta: '1 - Menu - (volta para o Menu principal)\n2 - Pedido - (Mostra o pedido que está pendente)\n3 - Excluir - (Exclui totalmente o pedido que está pendente)\n4 - Finalizar - (Finaliza o pedido que está pendente)\n5 - ? - (mostra a lista de palavras reservadas)',
       cart: cart.length > 0 ? cart : undefined,
+    };
+  }
+
+  // A qualquer momento: mensagem terminada em ? → pesquisa (busca web + LLM), sem validar o que estava aguardando
+  if (msgTrimInicio.endsWith('?')) {
+    let systemContentPergunta = SYSTEM_PROMPT_BASE;
+    const cartAtualPergunta = [...cart];
+    const carrinhoJsonPergunta = JSON.stringify(cartAtualPergunta, null, 0);
+    systemContentPergunta += `\n\nCarrinho atual do cliente: ${carrinhoJsonPergunta}.`;
+    systemContentPergunta += `\n\nIMPORTANTE: O cliente fez uma pergunta (frase terminada em ?). Pesquise na web e use o contexto abaixo para dar a melhor resposta possível. Responda somente à pergunta e termine com "Mas, voltando ao seu pedido. Qual é o produto que devo procurar?" NÃO escreva "Produtos encontrados.", NÃO inclua as opções "1 - Incluir produto no pedido" ou "2 - Procurar por outro produto".`;
+    const contextoWebPergunta = await buscarNaWeb(mensagem);
+    if (contextoWebPergunta) {
+      systemContentPergunta += `\n\nContexto da web (use para responder com precisão):\n${contextoWebPergunta}`;
+    }
+    const messagesPergunta: OpenAIMessage[] = [
+      { role: 'system', content: systemContentPergunta },
+      ...historico.map((h) => ({
+        role: (h.role === 'model' ? 'assistant' : 'user') as 'user' | 'assistant',
+        content: h.parts.map((p) => p.text).join('\n'),
+      })),
+      { role: 'user', content: mensagem },
+    ];
+    const resPergunta = await fetch(GROQ_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: messagesPergunta,
+        temperature: 0.7,
+        max_tokens: 1024,
+      }),
+    });
+    if (!resPergunta.ok) {
+      const err = await resPergunta.text();
+      throw new Error(`[${resPergunta.status}] ${err}`);
+    }
+    const dataPergunta = (await resPergunta.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    let textResposta = dataPergunta.choices?.[0]?.message?.content?.trim() || 'Desculpe, não consegui processar.';
+    textResposta = textResposta.replace(/\n?CART_ADD:[^\n]+/g, '').replace(/\n\n\n+/g, '\n\n').trim();
+    let mainTextPergunta = textResposta;
+    let textoPerguntaBalao: string | undefined;
+    const matchVoltando = textResposta.match(FRASE_VOLTANDO_PEDIDO_REGEX);
+    if (matchVoltando && matchVoltando.index !== undefined) {
+      mainTextPergunta = textResposta.slice(0, matchVoltando.index).replace(/\n+\s*$/, '').trim();
+      textoPerguntaBalao = FRASE_VOLTANDO_PEDIDO;
+    }
+    return {
+      text: mainTextPergunta,
+      ...(textoPerguntaBalao ? { textoPergunta: textoPerguntaBalao } : {}),
+      cart: cartAtualPergunta.length > 0 ? cartAtualPergunta : undefined,
     };
   }
 
@@ -436,7 +518,7 @@ export async function gerarRespostaChat(
     if (msgTrim === '1' && opcoesAlterarExcluir)
       return { text: 'Indique o produto e a quantidade (ex: 1,15)', cart: cartAtual.length > 0 ? cartAtual : undefined };
     if (msgTrim === '2' && opcoesAlterarExcluir)
-      return { text: 'Indique o produto para excluir (ex: 1)', cart: cartAtual.length > 0 ? cartAtual : undefined };
+      return { text: 'Qual item deseja excluir?', textoPergunta: 'Indique o produto para excluir (ex: 1)', cart: cartAtual.length > 0 ? cartAtual : undefined };
   }
 
   const ultimaTinhaOpcoes1e2 =
@@ -554,9 +636,18 @@ export async function gerarRespostaChat(
 
   if (clearCart) cartAtual = [];
 
-  const out: ChatResponse = { text };
+  let textFinal = text;
+  let textoPerguntaFinal: string | undefined;
+  const matchVoltandoFinal = text.match(FRASE_VOLTANDO_PEDIDO_REGEX);
+  if (matchVoltandoFinal && matchVoltandoFinal.index !== undefined) {
+    textFinal = text.slice(0, matchVoltandoFinal.index).replace(/\n+\s*$/, '').trim();
+    textoPerguntaFinal = FRASE_VOLTANDO_PEDIDO;
+  }
+
+  const out: ChatResponse = { text: textFinal };
   if (produtosRetorno?.length) out.produtos = produtosRetorno;
   if (cartAtual.length > 0 || clearCart || cartAddMatches.length > 0) out.cart = cartAtual;
   if (clearCart) out.clearCart = true;
+  if (textoPerguntaFinal) out.textoPergunta = textoPerguntaFinal;
   return out;
 }
