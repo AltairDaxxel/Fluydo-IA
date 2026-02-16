@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
       /^image\/(jpeg|png|webp|gif)$/i.test(type);
     if (!allowed) {
       return NextResponse.json(
-        { error: 'Formato não suportado. Use .txt, .pdf ou imagem (jpg, png, webp, gif).' },
+        { error: 'Tipo de arquivo inválido', code: 'TIPO_INVALIDO' },
         { status: 400 }
       );
     }
@@ -71,11 +71,48 @@ export async function POST(request: NextRequest) {
     }
 
     const resultado = await interpretarListaProdutos(texto);
-    const produtosParaResposta: Produto[] = resultado.itens.map((i) => i.produto);
+    const itensArquivo: Array<{
+      codigo: string;
+      descricao: string;
+      unidade: string;
+      quantidade: number;
+      estoque: number | '';
+      precoUnitario: number | null;
+      precoTotal: number | null;
+    }> = [];
+    let total = 0;
+    resultado.itens.forEach((item, idx) => {
+      const p = item.produto as Produto & { precoUnitario?: number };
+      const preco = p.precoUnitario ?? 0;
+      const precoTotal = item.quantidade * preco;
+      total += precoTotal;
+      itensArquivo.push({
+        codigo: p.codigo,
+        descricao: p.descricao,
+        unidade: 'Un',
+        quantidade: item.quantidade,
+        estoque: p.estoque ?? 0,
+        precoUnitario: preco > 0 ? preco : null,
+        precoTotal: precoTotal > 0 ? precoTotal : null,
+      });
+    });
+    resultado.naoEncontrados.forEach((n) => {
+      itensArquivo.push({
+        codigo: n.termo,
+        descricao: '',
+        unidade: 'Un',
+        quantidade: n.quantidade,
+        estoque: '',
+        precoUnitario: null,
+        precoTotal: null,
+      });
+    });
 
     return NextResponse.json({
-      text: resultado.textoResposta,
-      produtos: produtosParaResposta.length > 0 ? produtosParaResposta : undefined,
+      tipoResposta: 'pedidoArquivo',
+      text: '',
+      itensArquivo,
+      total,
       isLista: resultado.isLista,
     });
   } catch (err) {

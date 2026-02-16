@@ -1,11 +1,23 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+
+const TEXTO_SAUDACAO = 'Olá, eu sou o Fluydo.';
+const TEXTO_MENU_INICIAL = 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido';
+
+const TEXTO_PESQUISA =
+  'Você pode pesquisar produtos por código, descrição ou medidas. Mas se quiser fazer uma pergunta específica, como por exemplo, como funciona uma vedação? use sempre o sinal de interrogação no final da frase.';
+const PERGUNTA_QUAL_PRODUTO = 'Qual é o produto que devo procurar?';
+
+const TEXTO_USAR_BOTAO_ARQUIVO = 'Use o botão para enviar o arquivo.';
+const OPCOES_ARQUIVO = 'As opções de arquivo aceitas são: txt, pdf, ou foto';
 
 interface Mensagem {
   id: string;
   role: 'user' | 'model';
   text: string;
+  /** Data/hora da mensagem (Date.now()) para exibir hora:minuto */
+  timestamp?: number;
   produtos?: Array<{
     id: string;
     codigo: string;
@@ -16,28 +28,62 @@ interface Mensagem {
     precoUnitario?: number | string;
     medidas: { tipo_medida: string; valor_mm: number; unidade?: string }[];
   }>;
+  /** Tabela do pedido (mostrar pedido), com coluna Preço Total */
+  carrinho?: ItemCarrinho[];
+  /** Tabela do pedido vindo do arquivo (item, código, unidade, qtd, estoque, preço unit, total, descrição) */
+  itensArquivo?: Array<{ codigo: string; descricao: string; unidade: string; quantidade: number; estoque: number | ''; precoUnitario: number | null; precoTotal: number | null }>;
+  totalArquivo?: number;
+}
+
+interface ItemCarrinho {
+  codigo: string;
+  descricao: string;
+  quantidade: number;
+  precoUnitario?: number;
 }
 
 export default function ChatPage() {
-  const [mensagens, setMensagens] = useState<Mensagem[]>([]);
+  const [mensagens, setMensagens] = useState<Mensagem[]>(() => {
+    const t = Date.now();
+    return [
+      { id: 'inicial-1', role: 'model', text: TEXTO_SAUDACAO, timestamp: t },
+      { id: 'inicial-2', role: 'model', text: TEXTO_MENU_INICIAL, timestamp: t },
+    ];
+  });
   const [input, setInput] = useState('');
+  const [carrinho, setCarrinho] = useState<ItemCarrinho[]>([]);
+  const [pendingFileOrder, setPendingFileOrder] = useState<ItemCarrinho[] | null>(null);
+  const [aguardandoAlterarArquivo, setAguardandoAlterarArquivo] = useState(false);
+  const [aguardandoExcluirArquivo, setAguardandoExcluirArquivo] = useState(false);
   const [digitando, setDigitando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [logoErro, setLogoErro] = useState(false);
   const fimRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const formatarDataHora = (ts?: number) => {
+    if (ts == null) return '--/--/-- --:--';
+    const d = new Date(ts);
+    const dd = d.getDate().toString().padStart(2, '0');
+    const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+    const aa = d.getFullYear().toString().slice(-2);
+    const hh = d.getHours().toString().padStart(2, '0');
+    const min = d.getMinutes().toString().padStart(2, '0');
+    return `${dd}/${mm}/${aa} ${hh}:${min}`;
+  };
 
   useEffect(() => {
     fimRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensagens, digitando]);
 
+  // Sempre devolver o foco para a caixa de mensagem após qualquer interação (nova mensagem, fim de digitação, Limpar, etc.)
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    if (!digitando) inputRef.current?.focus();
-  }, [digitando]);
+    const t = setTimeout(() => {
+      inputRef.current?.focus();
+    }, 150);
+    return () => clearTimeout(t);
+  }, [mensagens, digitando]);
 
   const handleUploadOrder = async (file: File) => {
     if (digitando) return;
@@ -58,15 +104,42 @@ export default function ChatPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data?.error ?? 'Erro ao processar o arquivo');
+        if (data?.code === 'TIPO_INVALIDO' || (data?.error && /tipo de arquivo inválido|formato não suportado/i.test(data.error))) {
+          setMensagens((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: 'model', text: 'Tipo de arquivo inválido', timestamp: Date.now() },
+            { id: crypto.randomUUID(), role: 'model', text: `${TEXTO_USAR_BOTAO_ARQUIVO}\n${OPCOES_ARQUIVO}`, timestamp: Date.now() },
+          ]);
+        } else {
+          setErro(data?.error ?? 'Erro ao processar o arquivo');
+        }
+        setDigitando(false);
+        return;
       }
-      const modelMsg: Mensagem = {
-        id: crypto.randomUUID(),
-        role: 'model',
-        text: data.text,
-        produtos: data.produtos,
-      };
-      setMensagens((prev) => [...prev, modelMsg]);
+      if (data.tipoResposta === 'pedidoArquivo' && data.itensArquivo?.length) {
+        const itens: ItemCarrinho[] = data.itensArquivo.map((r: { codigo: string; descricao: string; quantidade: number; precoUnitario?: number | null }) => ({
+          codigo: r.codigo,
+          descricao: r.descricao || r.codigo,
+          quantidade: r.quantidade,
+          precoUnitario: r.precoUnitario ?? undefined,
+        }));
+        setPendingFileOrder(itens);
+        const tabelaMsg: Mensagem = {
+          id: crypto.randomUUID(),
+          role: 'model',
+          text: '',
+          itensArquivo: data.itensArquivo,
+          totalArquivo: data.total ?? 0,
+        };
+        const opcoesMsg: Mensagem = {
+          id: crypto.randomUUID(),
+          role: 'model',
+          text: '1 - Salvar pedido\n2 - Alterar Produto\n3 - Excluir produto',
+        };
+        setMensagens((prev) => [...prev, tabelaMsg, opcoesMsg]);
+      } else {
+        setMensagens((prev) => [...prev, { id: crypto.randomUUID(), role: 'model', text: data?.text || 'Arquivo processado.', timestamp: Date.now() }]);
+      }
     } catch (err) {
       setErro(err instanceof Error ? err.message : 'Erro ao enviar arquivo');
     } finally {
@@ -75,9 +148,7 @@ export default function ChatPage() {
     }
   };
 
-  const nomeJaInformado = mensagens.some(
-    (m) => m.role === 'model' && m.text.includes('em que posso te ajudar')
-  );
+  const podeAnexar = true;
 
   const handleSendMessage = async (textoOverride?: string) => {
     const texto = (textoOverride !== undefined ? textoOverride : input).trim();
@@ -87,7 +158,88 @@ export default function ChatPage() {
       id: crypto.randomUUID(),
       role: 'user',
       text: texto,
+      timestamp: Date.now(),
     };
+    const ultimaModelText = [...mensagens].reverse().find((m) => m.role === 'model')?.text ?? '';
+    const ultimaEraOpcoesArquivo = /1\s*-\s*Salvar pedido/i.test(ultimaModelText) && /3\s*-\s*Excluir produto/i.test(ultimaModelText);
+
+    if (pendingFileOrder && texto === '1' && ultimaEraOpcoesArquivo) {
+      setMensagens((prev) => [...prev, userMsg]);
+      if (textoOverride === undefined) setInput('');
+      setCarrinho((prev) => [...prev, ...pendingFileOrder]);
+      setPendingFileOrder(null);
+      setMensagens((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: 'model', text: 'Pedido salvo.', timestamp: Date.now() },
+        { id: crypto.randomUUID(), role: 'model', text: TEXTO_SAUDACAO, timestamp: Date.now() },
+        { id: crypto.randomUUID(), role: 'model', text: TEXTO_MENU_INICIAL, timestamp: Date.now() },
+      ]);
+      setDigitando(false);
+      return;
+    }
+
+    const matchAlterar = texto.match(/^(\d+)\s*[,]\s*(\d+)$/) || texto.match(/^(\d+)\s+(\d+)$/);
+    if (pendingFileOrder && aguardandoAlterarArquivo && matchAlterar) {
+      const itemIdx = parseInt(matchAlterar[1], 10) - 1;
+      const qtd = Math.max(1, parseInt(matchAlterar[2], 10));
+      if (itemIdx >= 0 && itemIdx < pendingFileOrder.length) {
+        const updated = pendingFileOrder.map((it, i) => (i === itemIdx ? { ...it, quantidade: qtd } : it));
+        setPendingFileOrder(updated);
+        setAguardandoAlterarArquivo(false);
+        setMensagens((prev) => [...prev, userMsg]);
+        if (textoOverride === undefined) setInput('');
+        const itensArquivo = updated.map((it) => ({
+          codigo: it.codigo,
+          descricao: it.descricao,
+          unidade: 'Un',
+          quantidade: it.quantidade,
+          estoque: '' as number | '',
+          precoUnitario: it.precoUnitario ?? null,
+          precoTotal: (it.precoUnitario ?? 0) * it.quantidade || null,
+        }));
+        const total = updated.reduce((s, it) => s + it.quantidade * (it.precoUnitario ?? 0), 0);
+        setMensagens((prev) => [
+          ...prev,
+          { id: crypto.randomUUID(), role: 'model', text: '', itensArquivo, totalArquivo: total, timestamp: Date.now() },
+          { id: crypto.randomUUID(), role: 'model', text: '1 - Salvar pedido\n2 - Alterar Produto\n3 - Excluir produto', timestamp: Date.now() },
+        ]);
+        setDigitando(false);
+        return;
+      }
+    }
+
+    if (pendingFileOrder && aguardandoExcluirArquivo && /^\d+$/.test(texto)) {
+      const itemIdx = parseInt(texto, 10) - 1;
+      if (itemIdx >= 0 && itemIdx < pendingFileOrder.length) {
+        const updated = pendingFileOrder.filter((_, i) => i !== itemIdx);
+        setPendingFileOrder(updated.length > 0 ? updated : null);
+        setAguardandoExcluirArquivo(false);
+        setMensagens((prev) => [...prev, userMsg]);
+        if (textoOverride === undefined) setInput('');
+        if (updated.length === 0) {
+          setMensagens((prev) => [...prev, { id: crypto.randomUUID(), role: 'model', text: 'Nenhum item no pedido do arquivo.', timestamp: Date.now() }]);
+        } else {
+          const itensArquivo = updated.map((it) => ({
+            codigo: it.codigo,
+            descricao: it.descricao,
+            unidade: 'Un',
+            quantidade: it.quantidade,
+            estoque: '' as number | '',
+            precoUnitario: it.precoUnitario ?? null,
+            precoTotal: (it.precoUnitario ?? 0) * it.quantidade || null,
+          }));
+          const total = updated.reduce((s, it) => s + it.quantidade * (it.precoUnitario ?? 0), 0);
+          setMensagens((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: 'model', text: '', itensArquivo, totalArquivo: total, timestamp: Date.now() },
+            { id: crypto.randomUUID(), role: 'model', text: '1 - Salvar pedido\n2 - Alterar Produto\n3 - Excluir produto', timestamp: Date.now() },
+          ]);
+        }
+        setDigitando(false);
+        return;
+      }
+    }
+
     setMensagens((prev) => [...prev, userMsg]);
     if (textoOverride === undefined) setInput('');
     setErro(null);
@@ -99,10 +251,26 @@ export default function ChatPage() {
         parts: [{ text: m.text }],
       }));
 
+      const ultimaComProdutos = [...mensagens].reverse().find((m) => m.role === 'model' && m.produtos && m.produtos.length > 0);
+      const lastProducts = ultimaComProdutos?.produtos?.map((p) => ({
+        id: p.id,
+        codigo: p.codigo,
+        descricao: p.descricao,
+        estoque: p.estoque,
+        medidas: p.medidas,
+        precoUnitario: typeof p.precoUnitario === 'number' ? p.precoUnitario : undefined,
+      }));
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: texto, history }),
+        body: JSON.stringify({
+          message: texto,
+          history,
+          cart: carrinho,
+          ...(lastProducts?.length ? { lastProducts } : {}),
+          ...(ultimaEraOpcoesArquivo ? { ultimaMensagemEraOpcoesArquivo: true } : {}),
+        }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -111,13 +279,41 @@ export default function ChatPage() {
         throw new Error(data?.error ?? 'Erro ao enviar mensagem');
       }
 
+      if (data.clearCart) setCarrinho([]);
+      else if (data.cart) setCarrinho(data.cart);
+
+      if (data.text?.includes('Indique o produto e a quantidade')) setAguardandoAlterarArquivo(true);
+      else setAguardandoAlterarArquivo(false);
+      if (data.text?.includes('Indique o produto (ex: 1)')) setAguardandoExcluirArquivo(true);
+      else setAguardandoExcluirArquivo(false);
+
+      const now = Date.now();
       const modelMsg: Mensagem = {
         id: crypto.randomUUID(),
         role: 'model',
         text: data.text,
+        timestamp: now,
         produtos: data.produtos,
+        ...(data.exibirCarrinho && data.cart?.length && !data.carrinhoEmBalaoSeparado ? { carrinho: data.cart } : {}),
       };
       setMensagens((prev) => [...prev, modelMsg]);
+
+      if (data.carrinhoEmBalaoSeparado && data.cart?.length) {
+        setMensagens((prev) => [
+          ...prev,
+          { id: crypto.randomUUID(), role: 'model', text: '', carrinho: data.cart, timestamp: Date.now() },
+        ]);
+      }
+
+      if (data.textoPergunta) {
+        const perguntaMsg: Mensagem = {
+          id: crypto.randomUUID(),
+          role: 'model',
+          text: data.textoPergunta,
+          timestamp: Date.now(),
+        };
+        setMensagens((prev) => [...prev, perguntaMsg]);
+      }
     } catch (err) {
       setErro(err instanceof Error ? err.message : 'Erro de conexão');
     } finally {
@@ -129,60 +325,148 @@ export default function ChatPage() {
     <div style={styles.container}>
       <header style={styles.header}>
         <div style={styles.headerLogoWrap}>
-          <img
-            src="/logo-fluydo.png"
-            alt="Fluydo.AI"
-            width={180}
-            height={44}
-            style={styles.logo}
-          />
+          {logoErro ? (
+            <span style={styles.logoTexto}>Fluydo IA</span>
+          ) : (
+            <img
+              src="/LogoFluydo.png"
+              alt="Fluydo.AI"
+              width={180}
+              height={44}
+              style={styles.logo}
+              onError={() => setLogoErro(true)}
+            />
+          )}
           <div style={styles.headerSlogan}>Solução sob medida com agilidade digital</div>
         </div>
         <div style={styles.headerVersao}>Versão: 1.0.0</div>
       </header>
 
       <main style={styles.chat}>
-        {mensagens.length === 0 && !digitando && (
-          <div style={styles.chatInicio}>
-            <div style={styles.icone}>💬</div>
-            <h2 style={styles.chatInicioTitulo}>Bem-vindo ao Fluydo IA</h2>
-            <p style={styles.chatInicioP}>
-              Digite uma mensagem abaixo para começar. Você pode encontrar produtos por Código, descrição ou medidas.
-            </p>
-          </div>
-        )}
-
         {mensagens.map((m) => (
-          <div
-            key={m.id}
-            style={{
-              ...styles.balao,
-              ...(m.role === 'user' ? styles.balaoUser : styles.balaoModel),
-            }}
-          >
-            <div style={m.role === 'user' ? styles.textoUser : styles.textoModel}>
-              {m.text}
-            </div>
+          <div key={m.id} style={styles.balaoWrap}>
+            <div
+              style={{
+                ...styles.balao,
+                ...(m.role === 'user' ? styles.balaoUser : styles.balaoModel),
+              }}
+            >
+              <div style={m.role === 'user' ? styles.textoUser : styles.textoModel}>
+                {m.text}
+              </div>
             {m.produtos && m.produtos.length > 0 && (
-              <div style={styles.cards}>
-                {m.produtos.map((p, idx) => (
-                  <div key={p.id} style={{ ...styles.card, ...(idx > 0 ? styles.cardSeparador : {}) }}>
-                    {m.produtos && m.produtos.length > 1 && (
-                      <div style={styles.cardNumero}>{p.codigo}</div>
-                    )}
-                    <div style={styles.cardLinha}><strong>Código:</strong> {p.codigo}</div>
-                    <div style={styles.cardLinha}><strong>Descrição:</strong> {p.descricao}</div>
-                    <div style={styles.cardLinha}><strong>Material:</strong> {p.material ?? '—'}</div>
-                    <div style={styles.cardLinha}><strong>Unidade:</strong> {p.unidade ?? '—'}</div>
-                    <div style={styles.cardLinha}><strong>Estoque:</strong> {p.estoque}</div>
-                    <div style={styles.cardLinha}><strong>Preço unitário:</strong> {p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? `R$ ${p.precoUnitario.toFixed(2)}` : p.precoUnitario) : '—'}</div>
-                  </div>
-                ))}
-                {m.produtos && m.produtos.length > 1 && (
-                  <div style={styles.cardPergunta}>Qual o produto (código) e qual a quantidade? (ex.: código 10)</div>
-                )}
+              <div style={styles.tabelaWrap}>
+                <table style={styles.tabela}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Item</th>
+                      <th style={styles.th}>Código</th>
+                      <th style={styles.th}>Unidade</th>
+                      <th style={styles.th}>Estoque</th>
+                      <th style={styles.th}>Preço Unit.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {m.produtos.map((p, idx) => (
+                      <React.Fragment key={p.id}>
+                        <tr>
+                          <td style={styles.td}>{idx + 1}</td>
+                          <td style={styles.td}>{p.codigo}</td>
+                          <td style={styles.td}>{p.unidade ?? '—'}</td>
+                          <td style={styles.td}>{p.estoque}</td>
+                          <td style={styles.td}>{p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? `R$ ${p.precoUnitario.toFixed(2)}` : String(p.precoUnitario)) : '—'}</td>
+                        </tr>
+                        <tr>
+                          <td style={styles.tdDescricao} colSpan={5}>{p.descricao}</td>
+                        </tr>
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
+            {m.carrinho && m.carrinho.length > 0 && (() => {
+              const itens = m.carrinho!;
+              const totalPedido = itens.reduce((s, i) => s + (i.quantidade * (i.precoUnitario ?? 0)), 0);
+              return (
+                <div style={styles.tabelaWrap}>
+                  <table style={styles.tabela}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Item</th>
+                        <th style={styles.th}>Código</th>
+                        <th style={styles.th}>Unidade</th>
+                        <th style={styles.th}>Quantidade</th>
+                        <th style={styles.th}>Preço Unit.</th>
+                        <th style={styles.th}>Preço Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {itens.map((item, idx) => {
+                        const precoUnit = item.precoUnitario ?? 0;
+                        const precoTotal = item.quantidade * precoUnit;
+                        return (
+                          <React.Fragment key={`${item.codigo}-${idx}`}>
+                            <tr>
+                              <td style={styles.td}>{idx + 1}</td>
+                              <td style={styles.td}>{item.codigo}</td>
+                              <td style={styles.td}>Un</td>
+                              <td style={styles.td}>{item.quantidade}</td>
+                              <td style={styles.td}>{precoUnit > 0 ? `R$ ${precoUnit.toFixed(2)}` : '—'}</td>
+                              <td style={styles.td}>{precoTotal > 0 ? `R$ ${precoTotal.toFixed(2)}` : '—'}</td>
+                            </tr>
+                            <tr>
+                              <td style={styles.tdDescricao} colSpan={6}>{item.descricao}</td>
+                            </tr>
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <p style={styles.totalPedido}>Total do pedido: R$ {totalPedido.toFixed(2)}</p>
+                </div>
+              );
+            })()}
+            {m.itensArquivo && m.itensArquivo.length > 0 && (
+              <div style={styles.tabelaWrap}>
+                <table style={styles.tabela}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Item</th>
+                      <th style={styles.th}>Código</th>
+                      <th style={styles.th}>Unidade</th>
+                      <th style={styles.th}>Quantidade</th>
+                      <th style={styles.th}>Estoque</th>
+                      <th style={styles.th}>Preço Unit.</th>
+                      <th style={styles.th}>Preço Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {m.itensArquivo.map((r, idx) => (
+                      <React.Fragment key={`${r.codigo}-${idx}`}>
+                        <tr>
+                          <td style={styles.td}>{idx + 1}</td>
+                          <td style={styles.td}>{r.codigo}</td>
+                          <td style={styles.td}>{r.unidade}</td>
+                          <td style={styles.td}>{r.quantidade}</td>
+                          <td style={styles.td}>{r.estoque === '' ? '—' : r.estoque}</td>
+                          <td style={styles.td}>{r.precoUnitario != null ? `R$ ${Number(r.precoUnitario).toFixed(2)}` : '—'}</td>
+                          <td style={styles.td}>{r.precoTotal != null ? `R$ ${Number(r.precoTotal).toFixed(2)}` : '—'}</td>
+                        </tr>
+                        <tr>
+                          <td style={styles.tdDescricao} colSpan={7}>{r.descricao || '—'}</td>
+                        </tr>
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+                {(m.totalArquivo ?? 0) >= 0 && <p style={styles.totalPedido}>Total do pedido: R$ {(m.totalArquivo ?? 0).toFixed(2)}</p>}
+              </div>
+            )}
+            </div>
+            <div style={{ ...styles.balaoRodape, ...(m.role === 'model' ? styles.balaoRodapeModel : {}) }}>
+              {m.role === 'user' ? 'Você' : 'Fluydo'} - {formatarDataHora(m.timestamp)}
+            </div>
           </div>
         ))}
 
@@ -198,6 +482,8 @@ export default function ChatPage() {
 
         <div ref={fimRef} />
       </main>
+
+      <p style={styles.avisoIa}>O Fluydo é uma IA e pode cometer erros.</p>
 
       <div style={styles.inputArea}>
         <input
@@ -215,16 +501,12 @@ export default function ChatPage() {
             type="button"
             onClick={() => {
               if (digitando) return;
-              if (nomeJaInformado) {
-                fileInputRef.current?.click();
-              } else {
-                handleSendMessage('Oi');
-              }
+              fileInputRef.current?.click();
             }}
             disabled={digitando}
             style={styles.btnAnexo}
-            aria-label={nomeJaInformado ? 'Enviar arquivo ou foto' : 'Iniciar conversa'}
-            title={nomeJaInformado ? 'Enviar arquivo ou foto com lista de produtos' : 'Clique para iniciar e informar seu nome'}
+            aria-label="Enviar arquivo ou foto com lista de produtos"
+            title="Enviar arquivo ou foto com lista de produtos"
           >
             📎
           </button>
@@ -254,9 +536,22 @@ export default function ChatPage() {
         </div>
         <button
           type="button"
-          onClick={() => window.location.reload()}
+          onClick={() => {
+            if (digitando) return;
+            const t = Date.now();
+            setMensagens([
+              { id: 'inicial-1', role: 'model', text: TEXTO_SAUDACAO, timestamp: t },
+              { id: 'inicial-2', role: 'model', text: TEXTO_MENU_INICIAL, timestamp: t },
+            ]);
+            setCarrinho([]);
+            setPendingFileOrder(null);
+            setAguardandoAlterarArquivo(false);
+            setAguardandoExcluirArquivo(false);
+            setErro(null);
+          }}
+          disabled={digitando}
           style={styles.btnLimpar}
-          aria-label="Limpar e recarregar"
+          aria-label="Limpar conversa e recomeçar"
         >
           Limpar
         </button>
@@ -283,6 +578,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   headerLogoWrap: { display: 'flex', flexDirection: 'column', gap: '0.5rem' },
   logo: { objectFit: 'contain', height: 44, width: 'auto' },
+  logoTexto: { fontSize: '1.5rem', fontWeight: 700, color: 'var(--branco)' },
   headerSlogan: { fontSize: '0.85rem', fontWeight: 700 },
   headerVersao: { marginLeft: 'auto', fontSize: '0.8rem', opacity: 0.95 },
   chat: {
@@ -307,6 +603,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: '0.35rem',
   },
   chatInicioP: { fontSize: '0.9rem' },
+  balaoWrap: { display: 'flex', flexDirection: 'column', gap: '0.2rem', alignSelf: 'stretch' },
   balao: {
     maxWidth: '50ch',
     padding: '0.75rem 1rem',
@@ -314,6 +611,16 @@ const styles: Record<string, React.CSSProperties> = {
     alignSelf: 'flex-start',
     wordBreak: 'break-word' as const,
     overflowWrap: 'break-word' as const,
+  },
+  balaoRodape: {
+    paddingLeft: '0.25rem',
+    paddingRight: '0.25rem',
+    marginTop: 2,
+    fontSize: '0.7rem',
+    color: 'var(--cinza-placeholder)',
+  },
+  balaoRodapeModel: {
+    marginLeft: '2.5rem',
   },
   balaoUser: {
     alignSelf: 'flex-start',
@@ -330,6 +637,13 @@ const styles: Record<string, React.CSSProperties> = {
   textoUser: { fontSize: '0.95rem', color: 'var(--branco)', fontWeight: 500 },
   textoModel: { fontSize: '0.95rem', whiteSpace: 'pre-wrap', fontWeight: 700, fontStyle: 'italic', color: 'var(--preto)' },
   digitando: { fontSize: '0.9rem', color: 'var(--cinza-placeholder)', fontWeight: 700, fontStyle: 'italic' },
+  tabelaWrap: { marginTop: '0.75rem', overflowX: 'auto' },
+  tabela: { width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' },
+  th: { textAlign: 'left', padding: '0.4rem 0.5rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: 'var(--azul-escuro)' },
+  td: { padding: '0.35rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)' },
+  tdDescricao: { padding: '0.35rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)' },
+  totalPedido: { marginTop: '0.5rem', marginBottom: 0, fontSize: '1rem', fontWeight: 700, color: 'var(--azul-escuro)' },
+  tabelaPergunta: { marginTop: '0.5rem', marginBottom: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--azul-escuro)' },
   cards: { display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem' },
   card: {
     padding: '0.6rem 0.75rem',
@@ -380,6 +694,15 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--cinza-placeholder)',
     cursor: 'pointer',
     fontFamily: 'inherit',
+  },
+  avisoIa: {
+    margin: 0,
+    marginTop: '0.5rem',
+    marginBottom: '0.35rem',
+    paddingLeft: 'calc(1rem + 48px + 0.5rem)',
+    paddingRight: '1rem',
+    fontSize: '0.75rem',
+    color: 'var(--cinza-placeholder)',
   },
   input: {
     flex: 1,

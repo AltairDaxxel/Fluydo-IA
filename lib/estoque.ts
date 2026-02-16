@@ -64,9 +64,13 @@ function itemAtendeCodigo(item: Produto, codigo: string): boolean {
   return item.codigo.toLowerCase().includes(codigo.trim().toLowerCase());
 }
 
+/** Exige que a descrição do item contenha todas as palavras do termo (combinações de palavras). */
 function itemAtendeDescricao(item: Produto, termo: string): boolean {
-  if (!termo.trim()) return true;
-  return item.descricao.toLowerCase().includes(termo.trim().toLowerCase());
+  const t = termo.trim();
+  if (!t) return true;
+  const palavras = t.split(/\s+/).map((p) => p.trim().toLowerCase()).filter(Boolean);
+  const descLower = item.descricao.toLowerCase();
+  return palavras.every((palavra) => descLower.includes(palavra));
 }
 
 /**

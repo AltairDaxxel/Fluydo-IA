@@ -121,16 +121,19 @@ ${texto.slice(0, 6000)}`;
   const itensEncontrados = listaComResultado.filter((x) => x.produto) as Array<{ produto: Produto; quantidade: number; termo: string }>;
   const naoEncontrados = listaComResultado.filter((x) => !x.produto).map((x) => ({ termo: x.termo, quantidade: x.quantidade }));
 
-  let textoResposta = 'Lista do seu arquivo:\n\n';
-  listaComResultado.forEach((item, i) => {
-    textoResposta += `${i + 1}. ${item.termo} – Qtd: ${item.quantidade}\n`;
-    if (item.produto) {
-      textoResposta += `   → Encontrado: ${item.produto.codigo} – ${item.produto.descricao}\n`;
-    } else {
-      textoResposta += `   → Não encontrado\n`;
+  let textoResposta = '';
+  if (itensEncontrados.length > 0) {
+    textoResposta = 'Lista do seu arquivo (encontrados):\n\n';
+    itensEncontrados.forEach((item, i) => {
+      textoResposta += `${i + 1}. ${item.termo} – Qtd: ${item.quantidade}\n`;
+      textoResposta += `   → ${item.produto.codigo} – ${item.produto.descricao}\n\n`;
+    });
+    if (naoEncontrados.length > 0) {
+      textoResposta += `Não encontrei no estoque: ${naoEncontrados.map((n) => n.termo).join(', ')}.\n\n`;
     }
-    textoResposta += '\n';
-  });
+  } else {
+    textoResposta = `Nenhum produto encontrado no estoque para: ${naoEncontrados.map((n) => n.termo).join(', ')}.\n\n`;
+  }
   textoResposta += 'Em que mais posso te ajudar?';
 
   return {

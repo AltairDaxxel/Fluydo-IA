@@ -3,6 +3,14 @@
  * Pedido vinculado à loja, com valorTotal e comissão de 5%.
  */
 
+/** Item no carrinho do chat (antes de fechar o pedido) */
+export interface ItemCarrinho {
+  codigo: string;
+  descricao: string;
+  quantidade: number;
+  precoUnitario?: number;
+}
+
 export interface ItemPedido {
   produtoId: string;
   codigo: string;
