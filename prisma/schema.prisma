@@ -1,0 +1,70 @@
+// Fluydo.IA - Schema Prisma (SQL)
+// Ajuste o provider conforme seu banco: mysql, postgresql, sqlserver
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Produto {
+  id            String   @id @db.VarChar(50)
+  codigo        String   @map("Codigo") @db.VarChar(30)
+  descricao     String   @db.VarChar(100)
+  dim1          Decimal? @db.Decimal(7, 3)
+  dim2          Decimal? @db.Decimal(7, 3)
+  dim3          Decimal? @db.Decimal(7, 3)
+  dim4          Decimal? @db.Decimal(7, 3)
+  material      String?  @map("Material") @db.VarChar(20)
+  unidade       String?  @map("Unidade") @db.VarChar(6)
+  aplicacao     String?  @map("Aplicacao") @db.VarChar(100)
+  estoque       Decimal  @map("Estoque") @db.Decimal(18, 3)
+  precoUnitario Decimal? @map("PrecoUnitario") @db.Decimal(18, 3)
+  ativo         Int      @map("Ativo")
+
+  pedidoItens PedidoItem[]
+
+  @@map("Produto")
+}
+
+model Cliente {
+  id       String  @id @db.VarChar(50)
+  cnpj     String? @map("CNPJ") @db.VarChar(20)
+  cpf      String? @map("CPF") @db.VarChar(14)
+  telefone String? @map("Telefone") @db.VarChar(30)
+  email    String? @map("e-mail") @db.VarChar(100)
+  senha    String? @map("Senha") @db.VarChar(255)
+  ativo    Int     @map("Ativo")
+
+  pedidos Pedido[]
+
+  @@map("Cliente")
+}
+
+model Pedido {
+  id        String   @id @db.VarChar(50)
+  clienteId String   @map("ClienteId") @db.VarChar(50)
+  createdAt DateTime @map("createdAt")
+  updatedAt DateTime @map("updatedAt")
+
+  cliente Cliente       @relation(fields: [clienteId], references: [id])
+  itens   PedidoItem[]
+
+  @@map("Pedido")
+}
+
+model PedidoItem {
+  id         String   @id @db.VarChar(50)
+  pedidoId   String   @map("PedidoId") @db.VarChar(50)
+  produtoId  String   @map("ProdutoId") @db.VarChar(50)
+  quantidade Decimal  @db.Decimal(18, 3)
+  precoUnit  Decimal  @map("precoUnit") @db.Decimal(18, 3)
+
+  pedido  Pedido  @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  produto Produto @relation(fields: [produtoId], references: [id])
+
+  @@map("PedidoItens")
+}

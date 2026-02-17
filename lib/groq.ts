@@ -9,13 +9,15 @@ import type { Produto, ItemCarrinho } from '@/types';
 import { buscarNaWeb } from './busca-web';
 import { consultarEstoque } from './estoque';
 import { buscarClientePorCpfCnpj, listarCondicoesPagamento } from './clientes';
+import { hasDatabase } from './prisma';
+import { buscarProdutosPrisma, mapBuscaToChatProduto } from './busca-prisma';
 
 config({ path: path.resolve(process.cwd(), '.env.local') });
 config({ path: path.join(__dirname, '..', '.env.local') });
 
 const SYSTEM_PROMPT_BASE = `Você é o Fluydo. Seu objetivo como agente de IA é vender. Todas as mensagens do cliente devem ser interpretadas por você e você deve sempre responder: entenda o que ele quer, o contexto e a intenção, e dê uma resposta humanizada—natural, cordial e próxima, como um atendente real. Evite respostas robóticas; adapte o tom à situação. Seja direto mas caloroso.
 
-SAUDAÇÃO: Na primeira resposta use: "Olá, eu sou o Fluydo. Vou ajudá-lo com o seu pedido." Em outro balão: "Você pode pesquisar produtos por código, descrição ou medidas. Mas se quiser fazer uma pergunta específica, como por exemplo, como funciona uma vedação? use sempre o sinal de interrogação no final da frase." Em outro balão: "Qual é o produto que devo procurar?" Não use bom dia, boa tarde nem boa noite. Nunca pergunte o nome do cliente; exclua todas as situações que pedem o nome.
+SAUDAÇÃO: Na primeira resposta use: "Olá, eu sou o Fluydo, assistente virtual de IA." Em outro balão: "Você pode pesquisar produtos por código, descrição ou medidas. Mas se quiser fazer uma pergunta específica, como por exemplo, como funciona uma vedação? use sempre o sinal de interrogação no final da frase." Em outro balão: "Qual é o produto que devo procurar?" Não use bom dia, boa tarde nem boa noite. Nunca pergunte o nome do cliente; exclua todas as situações que pedem o nome.
 
 Use "produtos" (nunca "produtos para vedação industrial").
 
@@ -70,7 +72,7 @@ export async function gerarRespostaChat(
   const jaRespondeuNaConversa = historico.some((h) => h.role === 'model');
   if (!jaRespondeuNaConversa) {
     return {
-      text: 'Olá, eu sou o Fluydo.',
+      text: 'Olá, eu sou o Fluydo.IA, assistente virtual.',
       textoPergunta: 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido',
     };
   }
@@ -540,21 +542,39 @@ export async function gerarRespostaChat(
     if (termo === '1' || termo === '2') {
       // não fazer busca por "1" ou "2"
     } else {
-    const [porCodigo, porDescricao] = await Promise.all([
-      consultarEstoque({ codigo: termo }),
-      consultarEstoque({ descricao: termo }),
-    ]);
-    const porId = new Map<string, Produto>();
-    [...porCodigo, ...porDescricao].forEach((p) => porId.set(p.id, p));
-    const produtosEncontrados = Array.from(porId.values());
-    if (produtosEncontrados.length === 0) {
-      const textoSemResultado = `Pesquisando por "${termo}" não encontramos nenhum resultado no nosso estoque. É possível que você tenha digitado o código ou descrição incorretamente.`;
-      return {
-        text: textoSemResultado,
-        textoPergunta: 'Qual é o produto que devo procurar?',
-        cart: cartAtual.length > 0 ? cartAtual : undefined,
-      };
-    } else {
+      let produtosEncontrados: Produto[];
+
+      if (hasDatabase()) {
+        try {
+          const resultados = await buscarProdutosPrisma(mensagem);
+          produtosEncontrados = resultados.map((p) => mapBuscaToChatProduto(p) as unknown as Produto);
+        } catch {
+          const [porCodigo, porDescricao] = await Promise.all([
+            consultarEstoque({ codigo: termo }),
+            consultarEstoque({ descricao: termo }),
+          ]);
+          const porId = new Map<string, Produto>();
+          [...porCodigo, ...porDescricao].forEach((p) => porId.set(p.id, p));
+          produtosEncontrados = Array.from(porId.values());
+        }
+      } else {
+        const [porCodigo, porDescricao] = await Promise.all([
+          consultarEstoque({ codigo: termo }),
+          consultarEstoque({ descricao: termo }),
+        ]);
+        const porId = new Map<string, Produto>();
+        [...porCodigo, ...porDescricao].forEach((p) => porId.set(p.id, p));
+        produtosEncontrados = Array.from(porId.values());
+      }
+
+      if (produtosEncontrados.length === 0) {
+        const textoSemResultado = `Pesquisando por "${termo}" não encontramos nenhum resultado no nosso estoque. É possível que você tenha digitado o código ou descrição incorretamente.`;
+        return {
+          text: textoSemResultado,
+          textoPergunta: 'Qual é o produto que devo procurar?',
+          cart: cartAtual.length > 0 ? cartAtual : undefined,
+        };
+      }
       produtosRetorno = produtosEncontrados;
       return {
         text: 'Produtos encontrados.',
@@ -562,7 +582,6 @@ export async function gerarRespostaChat(
         produtos: produtosEncontrados,
         cart: cartAtual.length > 0 ? cartAtual : undefined,
       };
-    }
     }
   }
 

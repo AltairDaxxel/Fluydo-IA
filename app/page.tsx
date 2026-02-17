@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 
-const TEXTO_SAUDACAO = 'Olá, eu sou o Fluydo.';
+const TEXTO_SAUDACAO = 'Olá, eu sou o Fluydo.IA, assistente virtual.';
 const TEXTO_MENU_INICIAL = 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido';
 
 const TEXTO_PESQUISA =
@@ -26,6 +26,9 @@ interface Mensagem {
     material?: string;
     unidade?: string;
     precoUnitario?: number | string;
+    dim1?: number | null;
+    dim2?: number | null;
+    dim3?: number | null;
     medidas: { tipo_medida: string; valor_mm: number; unidade?: string }[];
   }>;
   /** Tabela do pedido (mostrar pedido), com coluna Preço Total */
@@ -358,10 +361,11 @@ export default function ChatPage() {
                   <thead>
                     <tr>
                       <th style={styles.th}>Item</th>
-                      <th style={styles.th}>Código</th>
+                      <th style={styles.th}>Codigo</th>
                       <th style={styles.th}>Unidade</th>
+                      <th style={styles.th}>Material</th>
                       <th style={styles.th}>Estoque</th>
-                      <th style={styles.th}>Preço Unit.</th>
+                      <th style={styles.th}>Preço Unit</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -371,11 +375,12 @@ export default function ChatPage() {
                           <td style={styles.td}>{idx + 1}</td>
                           <td style={styles.td}>{p.codigo}</td>
                           <td style={styles.td}>{p.unidade ?? '—'}</td>
+                          <td style={styles.td}>{p.material ?? '—'}</td>
                           <td style={styles.td}>{p.estoque}</td>
                           <td style={styles.td}>{p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? `R$ ${p.precoUnitario.toFixed(2)}` : String(p.precoUnitario)) : '—'}</td>
                         </tr>
                         <tr>
-                          <td style={styles.tdDescricao} colSpan={5}>{p.descricao}</td>
+                          <td style={styles.tdDescricao} colSpan={6}>{p.descricao}</td>
                         </tr>
                       </React.Fragment>
                     ))}
@@ -565,8 +570,7 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100vh',
   },
   header: {
-    background: 'var(--azul-header)',
-    color: 'var(--branco)',
+    background: 'var(--branco)',
     padding: '1rem 1.25rem',
     minHeight: 130,
     display: 'flex',
@@ -582,9 +586,15 @@ const styles: Record<string, React.CSSProperties> = {
     alignSelf: 'flex-start',
   },
   logo: { objectFit: 'contain', height: 88, width: 'auto', display: 'block' },
-  logoTexto: { fontSize: '2rem', fontWeight: 700, color: 'var(--branco)' },
-  headerSlogan: { fontSize: '0.85rem', fontWeight: 700 },
-  headerVersao: { marginLeft: 'auto', fontSize: '0.8rem', opacity: 0.95 },
+  logoTexto: { fontSize: '2rem', fontWeight: 700, color: 'var(--verde-lima)' },
+  headerSlogan: {
+    fontSize: '0.85rem',
+    fontWeight: 700,
+    color: 'var(--azul-header)',
+    paddingBottom: '0.35rem',
+    borderBottom: '2px solid var(--azul-header)',
+  },
+  headerVersao: { marginLeft: 'auto', fontSize: '0.8rem', color: 'var(--azul-header)' },
   chat: {
     flex: 1,
     overflowY: 'auto',
@@ -725,8 +735,8 @@ const styles: Record<string, React.CSSProperties> = {
     height: 48,
     borderRadius: '50%',
     border: 'none',
-    background: 'var(--azul-header)',
-    color: 'var(--branco)',
+    background: 'var(--verde-lima)',
+    color: 'var(--preto)',
     fontSize: '1.4rem',
     cursor: 'pointer',
     display: 'flex',

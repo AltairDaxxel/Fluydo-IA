@@ -9,10 +9,12 @@
     "serve": "node scripts/serve-no-cache.js",
     "dev:fresh": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true});console.log('.next apagado');\" && next dev",
     "typecheck": "tsc --noEmit",
-    "test:types": "tsc --noEmit"
+    "test:types": "tsc --noEmit",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@prisma/client": "^6.19.2",
     "dotenv": "^16.4.5",
     "next": "14.2.18",
     "react": "^18.3.1",
@@ -22,6 +24,7 @@
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
+    "prisma": "^6.0.0",
     "typescript": "^5.3.0"
   }
 }
