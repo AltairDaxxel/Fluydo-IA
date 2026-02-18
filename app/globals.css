@@ -11,6 +11,16 @@
   --branco: #fff;
   --preto: #111;
   --sombra: 0 1px 3px rgba(0, 0, 0, 0.12);
+  /* Tabela de produtos: menor no celular, maior no desktop */
+  --tabela-produtos-fs: 0.65rem;
+  --tabela-produtos-desc-fs: 0.6rem;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --tabela-produtos-fs: 0.8rem;
+    --tabela-produtos-desc-fs: 0.75rem;
+  }
 }
 
 * {

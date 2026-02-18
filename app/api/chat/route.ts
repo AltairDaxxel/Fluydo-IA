@@ -15,6 +15,8 @@ export interface ChatRequestBody {
   message: string;
   history?: { role: 'user' | 'model'; parts: { text: string }[] }[];
   cart?: ItemCarrinho[];
+  /** ID do emitente da sessão (obrigatório para consultas com Prisma; isolamento por ID_Emitente) */
+  idEmitente?: string;
   /** Última lista de produtos exibida (para resolver "1 15" ao escolher item e quantidade) */
   lastProducts?: Array<{ id: string; codigo: string; descricao: string; estoque: number; medidas?: { tipo_medida: string; valor_mm: number; unidade?: string }[]; precoUnitario?: number }>;
   /** Última mensagem do modelo foi as opções do pedido por arquivo (1 Salvar, 2 Alterar, 3 Excluir) */
@@ -28,6 +30,14 @@ export interface ChatResponseBody {
     codigo: string;
     descricao: string;
     estoque: number;
+    unidade?: string | null;
+    material?: string | null;
+    precoUnitario?: number | null;
+    ipi?: number | null;
+    dim1?: number | null;
+    dim2?: number | null;
+    dim3?: number | null;
+    dim4?: number | null;
     medidas: { tipo_medida: string; valor_mm: number; unidade?: string }[];
   }>;
   cart?: ItemCarrinho[];
@@ -51,6 +61,7 @@ export async function POST(request: NextRequest) {
     const message = typeof rawMessage === 'string' ? rawMessage.trim() : '';
     const history = body.history ?? [];
     const cart = body.cart ?? [];
+    const idEmitente = typeof body.idEmitente === 'string' ? body.idEmitente.trim() : '';
     const lastProducts = body.lastProducts as Produto[] | undefined;
     const ultimaMensagemEraOpcoesArquivo = body.ultimaMensagemEraOpcoesArquivo === true;
 
@@ -61,7 +72,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { text, produtos, cart: newCart, clearCart, exibirCarrinho: exibirCarrinhoResposta, textoPergunta, carrinhoEmBalaoSeparado } = await gerarRespostaChat(message, history, cart, lastProducts, ultimaMensagemEraOpcoesArquivo);
+    const { text, produtos, cart: newCart, clearCart, exibirCarrinho: exibirCarrinhoResposta, textoPergunta, carrinhoEmBalaoSeparado } = await gerarRespostaChat(message, history, cart, lastProducts, ultimaMensagemEraOpcoesArquivo, idEmitente);
 
     let mainText = text;
     let perguntaText = textoPergunta;
@@ -80,6 +91,14 @@ export async function POST(request: NextRequest) {
         codigo: p.codigo,
         descricao: p.descricao,
         estoque: p.estoque,
+        unidade: (p as { unidade?: string | null }).unidade ?? null,
+        material: (p as { material?: string | null }).material ?? null,
+        precoUnitario: (p as { precoUnitario?: number | null }).precoUnitario ?? null,
+        ipi: (p as { ipi?: number | null }).ipi ?? null,
+        dim1: (p as { dim1?: number | null }).dim1 ?? null,
+        dim2: (p as { dim2?: number | null }).dim2 ?? null,
+        dim3: (p as { dim3?: number | null }).dim3 ?? null,
+        dim4: (p as { dim4?: number | null }).dim4 ?? null,
         medidas: p.medidas,
       }));
     }

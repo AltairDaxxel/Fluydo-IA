@@ -2,7 +2,79 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 
-const TEXTO_SAUDACAO = 'Olá, eu sou o Fluydo.IA, assistente virtual.';
+type ProdutoParaPdf = {
+  codigo: string;
+  descricao: string;
+  estoque: number;
+  unidade?: string | null;
+  material?: string | null;
+  precoUnitario?: number | string | null;
+  ipi?: number | null;
+  dim1?: number | null;
+  dim2?: number | null;
+  dim3?: number | null;
+  dim4?: number | null;
+};
+
+function fmtNum(n: number | null | undefined): string {
+  if (n == null) return '—';
+  return String(n);
+}
+
+async function exportarProdutosParaPdf(produtos: ProdutoParaPdf[], nomeEmitente: string): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    const { jsPDF } = await import('jspdf');
+    const { autoTable } = await import('jspdf-autotable');
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const now = new Date();
+    const dataHora = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear().toString().slice(-2)} - ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    const head = [['#', 'Código', 'Estoque', 'Preço Unit.', 'dim1', 'dim2', 'dim3', 'dim4', 'Descrição', 'UN', 'Material']];
+    const body = produtos.map((p, idx) => [
+      String(idx + 1),
+      p.codigo,
+      String(p.estoque),
+      p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? p.precoUnitario.toFixed(2) : String(p.precoUnitario)) : '—',
+      fmtNum(p.dim1),
+      fmtNum(p.dim2),
+      fmtNum(p.dim3),
+      fmtNum(p.dim4),
+      p.descricao,
+      p.unidade ?? '—',
+      p.material ?? '—',
+    ]);
+    const startY = 18;
+    autoTable(doc, {
+      head,
+      body,
+      startY,
+      margin: { left: 8, right: 8 },
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [30, 64, 175], textColor: [255, 255, 255] },
+      alternateRowStyles: { fillColor: [240, 248, 255] },
+    });
+    const pageCount = doc.getNumberOfPages();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    for (let p = 1; p <= pageCount; p++) {
+      doc.setPage(p);
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.text(dataHora, 8, 8);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.text(nomeEmitente || 'Emitente', pageWidth / 2, 8, { align: 'center' });
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.text(`Fl. ${p} de ${pageCount}`, pageWidth - 8, 8, { align: 'right' });
+    }
+    doc.save(`produtos-fluydo-${new Date().toISOString().slice(0, 10)}.pdf`);
+  } catch (err) {
+    console.error('[PDF]', err);
+    alert('Não foi possível gerar o PDF. Tente novamente.');
+  }
+}
+
+const TEXTO_SAUDACAO = 'Olá, eu sou o Fluydo.IA, assistente virtual de vendas.';
 const TEXTO_MENU_INICIAL = 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido';
 
 const TEXTO_PESQUISA =
@@ -26,9 +98,11 @@ interface Mensagem {
     material?: string;
     unidade?: string;
     precoUnitario?: number | string;
+    ipi?: number | null;
     dim1?: number | null;
     dim2?: number | null;
     dim3?: number | null;
+    dim4?: number | null;
     medidas: { tipo_medida: string; valor_mm: number; unidade?: string }[];
   }>;
   /** Tabela do pedido (mostrar pedido), com coluna Preço Total */
@@ -45,7 +119,14 @@ interface ItemCarrinho {
   precoUnitario?: number;
 }
 
-export default function ChatPage() {
+interface ChatPageProps {
+  /** ID do emitente (parceiro) identificado pela URL; usado como filtro obrigatório nas APIs */
+  idEmitente?: string;
+  /** Nome do emitente para cabeçalho do PDF */
+  nomeEmitente?: string;
+}
+
+export function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
   const [mensagens, setMensagens] = useState<Mensagem[]>(() => {
     const t = Date.now();
     return [
@@ -101,6 +182,7 @@ export default function ChatPage() {
     try {
       const formData = new FormData();
       formData.append('file', file);
+      if (idEmitente) formData.append('idEmitente', idEmitente);
       const res = await fetch('/api/upload-order', {
         method: 'POST',
         body: formData,
@@ -271,6 +353,7 @@ export default function ChatPage() {
           message: texto,
           history,
           cart: carrinho,
+          ...(idEmitente ? { idEmitente } : {}),
           ...(lastProducts?.length ? { lastProducts } : {}),
           ...(ultimaEraOpcoesArquivo ? { ultimaMensagemEraOpcoesArquivo: true } : {}),
         }),
@@ -348,46 +431,86 @@ export default function ChatPage() {
           <div key={m.id} style={styles.balaoWrap}>
             <div
               style={{
-                ...styles.balao,
+                ...(m.produtos && m.produtos.length > 0 ? styles.balaoComTabela : styles.balao),
                 ...(m.role === 'user' ? styles.balaoUser : styles.balaoModel),
               }}
             >
-              <div style={m.role === 'user' ? styles.textoUser : styles.textoModel}>
-                {m.text}
-              </div>
-            {m.produtos && m.produtos.length > 0 && (
-              <div style={styles.tabelaWrap}>
-                <table style={styles.tabela}>
-                  <thead>
-                    <tr>
-                      <th style={styles.th}>Item</th>
-                      <th style={styles.th}>Codigo</th>
-                      <th style={styles.th}>Unidade</th>
-                      <th style={styles.th}>Material</th>
-                      <th style={styles.th}>Estoque</th>
-                      <th style={styles.th}>Preço Unit</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {m.produtos.map((p, idx) => (
-                      <React.Fragment key={p.id}>
+              {!(m.produtos && m.produtos.length > 0) && (
+                <div style={m.role === 'user' ? styles.textoUser : styles.textoModel}>
+                  {m.text}
+                </div>
+              )}
+            {m.produtos && m.produtos.length > 0 && (() => {
+                const produtosOrdenados = [...m.produtos!].sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
+                const textoContagem = m.text.replace(/^<(\d+)>\s*/, '$1 ');
+                return (
+              <>
+                <div style={styles.cardProdutos}>
+                  <div style={styles.tabelaWrapProdutos}>
+                    <div style={{ ...styles.balaoContagem, marginBottom: '0.5rem' }}>{textoContagem}</div>
+                    <table style={styles.tabelaProdutos}>
+                      <thead>
                         <tr>
-                          <td style={styles.td}>{idx + 1}</td>
-                          <td style={styles.td}>{p.codigo}</td>
-                          <td style={styles.td}>{p.unidade ?? '—'}</td>
-                          <td style={styles.td}>{p.material ?? '—'}</td>
-                          <td style={styles.td}>{p.estoque}</td>
-                          <td style={styles.td}>{p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? `R$ ${p.precoUnitario.toFixed(2)}` : String(p.precoUnitario)) : '—'}</td>
+                          <th style={styles.thProdutos}>#</th>
+                          <th style={styles.thProdutos}>Código</th>
+                          <th style={styles.thProdutosDireita}>Estoque</th>
+                          <th style={styles.thProdutosDireita}>Preço Unit.</th>
+                          <th style={styles.thProdutos}>dim1</th>
+                          <th style={styles.thProdutos}>dim2</th>
+                          <th style={styles.thProdutos}>dim3</th>
+                          <th style={styles.thProdutos}>dim4</th>
                         </tr>
-                        <tr>
-                          <td style={styles.tdDescricao} colSpan={6}>{p.descricao}</td>
-                        </tr>
-                      </React.Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                      </thead>
+                      <tbody>
+                        {produtosOrdenados.map((p, idx) => {
+                          const zebra = idx % 2 === 0 ? styles.trZebraPar : styles.trZebraImpar;
+                          const fmtNum = (n: number | null | undefined) => (n != null ? String(n) : '—');
+                          return (
+                            <React.Fragment key={p.id}>
+                              <tr style={zebra}>
+                                <td style={styles.tdProdutos}>{idx + 1}</td>
+                                <td style={styles.tdProdutos}>{p.codigo}</td>
+                                <td style={styles.tdProdutosDireita}>{p.estoque}</td>
+                                <td style={styles.tdProdutosDireita}>{p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? p.precoUnitario.toFixed(2) : String(p.precoUnitario)) : '—'}</td>
+                                <td style={styles.tdProdutos}>{fmtNum(p.dim1)}</td>
+                                <td style={styles.tdProdutos}>{fmtNum(p.dim2)}</td>
+                                <td style={styles.tdProdutos}>{fmtNum(p.dim3)}</td>
+                                <td style={styles.tdProdutos}>{fmtNum(p.dim4)}</td>
+                              </tr>
+                              <tr style={zebra}>
+                                <td style={styles.tdDescricaoProdutos} colSpan={6}>{p.descricao}</td>
+                                <td style={styles.tdProdutosCentro}>{p.unidade ?? '—'}</td>
+                                <td style={styles.tdProdutos}>{p.material ?? '—'}</td>
+                              </tr>
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    <div style={{ ...styles.balaoContagem, marginTop: '0.5rem' }}>{textoContagem}</div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '0.5rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                        style={{ ...styles.btnPdf, marginRight: 0 }}
+                        aria-label="Ir para o início"
+                      >
+                        ir p/ inicio
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => exportarProdutosParaPdf(produtosOrdenados.map((p) => ({ codigo: p.codigo, descricao: p.descricao, estoque: p.estoque, unidade: p.unidade ?? null, material: p.material ?? null, precoUnitario: p.precoUnitario ?? null, ipi: p.ipi ?? null, dim1: p.dim1 ?? null, dim2: p.dim2 ?? null, dim3: p.dim3 ?? null, dim4: p.dim4 ?? null })), nomeEmitente)}
+                  style={styles.btnPdf}
+                  aria-label="Baixar lista de produtos em PDF"
+                >
+                  📄 Baixar PDF
+                </button>
+              </>
+                );
+              })()}
             {m.carrinho && m.carrinho.length > 0 && (() => {
               const itens = m.carrinho!;
               const totalPedido = itens.reduce((s, i) => s + (i.quantidade * (i.precoUnitario ?? 0)), 0);
@@ -586,7 +709,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignSelf: 'flex-start',
   },
   logo: { objectFit: 'contain', height: 88, width: 'auto', display: 'block' },
-  logoTexto: { fontSize: '2rem', fontWeight: 700, color: 'var(--verde-lima)' },
+  logoTexto: { fontSize: '2rem', fontWeight: 700, color: '#D6FF38' },
   headerSlogan: {
     fontSize: '0.85rem',
     fontWeight: 700,
@@ -598,7 +721,7 @@ const styles: Record<string, React.CSSProperties> = {
   chat: {
     flex: 1,
     overflowY: 'auto',
-    padding: '1rem',
+    padding: '1rem 0.4rem',
     display: 'flex',
     flexDirection: 'column',
     gap: '0.75rem',
@@ -625,6 +748,25 @@ const styles: Record<string, React.CSSProperties> = {
     alignSelf: 'flex-start',
     wordBreak: 'break-word' as const,
     overflowWrap: 'break-word' as const,
+  },
+  balaoComTabela: {
+    maxWidth: '100%',
+    padding: '0.5rem 0.35rem',
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+    wordBreak: 'break-word' as const,
+    overflowWrap: 'break-word' as const,
+  },
+  balaoContagem: {
+    marginTop: '0.5rem',
+    padding: '0.4rem 0.6rem',
+    borderRadius: 10,
+    background: 'var(--azul-resposta)',
+    border: '1px solid rgba(30, 64, 175, 0.2)',
+    fontSize: '0.85rem',
+    fontWeight: 700,
+    color: 'var(--preto)',
+    alignSelf: 'flex-start',
   },
   balaoRodape: {
     paddingLeft: '0.25rem',
@@ -656,6 +798,36 @@ const styles: Record<string, React.CSSProperties> = {
   th: { textAlign: 'left', padding: '0.4rem 0.5rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: 'var(--azul-escuro)' },
   td: { padding: '0.35rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)' },
   tdDescricao: { padding: '0.35rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)' },
+  cardProdutos: {
+    marginTop: 0,
+    padding: '0.3rem 0.2rem',
+    background: 'var(--azul-resposta)',
+    maxWidth: '100%',
+    minWidth: 0,
+  },
+  tabelaWrapProdutos: { marginTop: 0, overflowX: 'auto', WebkitOverflowScrolling: 'touch', maxWidth: '100%' },
+  tabelaProdutos: { width: 'max-content', minWidth: '100%', borderCollapse: 'collapse', fontSize: 'var(--tabela-produtos-fs)', fontFamily: 'ui-monospace, monospace' },
+  thProdutos: { textAlign: 'left', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  thProdutosCentro: { textAlign: 'center', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  thProdutosDireita: { textAlign: 'right', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  tdProdutos: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  tdProdutosCentro: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', textAlign: 'center', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  tdProdutosDireita: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', textAlign: 'right', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  tdDescricaoProdutos: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--cinza-texto)', fontSize: 'var(--tabela-produtos-desc-fs)', wordBreak: 'break-word', lineHeight: 1.25 },
+  trZebraPar: { background: 'rgba(255,255,255,0.5)' },
+  trZebraImpar: { background: 'rgba(147, 197, 253, 0.25)' },
+  btnPdf: {
+    marginTop: '0.5rem',
+    padding: '0.4rem 0.75rem',
+    fontSize: '0.85rem',
+    fontWeight: 700,
+    color: 'var(--azul-escuro)',
+    background: 'var(--verde-lima)',
+    border: 'none',
+    borderRadius: 8,
+    cursor: 'pointer',
+    alignSelf: 'flex-start',
+  },
   totalPedido: { marginTop: '0.5rem', marginBottom: 0, fontSize: '1rem', fontWeight: 700, color: 'var(--azul-escuro)' },
   tabelaPergunta: { marginTop: '0.5rem', marginBottom: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--azul-escuro)' },
   cards: { display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem' },
@@ -744,3 +916,14 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
   },
 };
+
+/** Página raiz: orienta a acessar via URL do parceiro (fluydo.ia.br/[telefone]) */
+export default function RootPage() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: 'var(--azul-fundo)', alignContent: 'center', justifyContent: 'center', padding: '2rem', textAlign: 'center' as const }}>
+      <p style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--verde-lima)', marginBottom: '0.5rem' }}>Fluydo.IA</p>
+      <p style={{ fontSize: '1.1rem', color: 'var(--cinza-texto)', marginBottom: '0.5rem' }}>Acesse via o link do seu parceiro.</p>
+      <p style={{ fontSize: '0.95rem', color: 'var(--azul-header)', fontWeight: 600 }}>Exemplo: fluydo.ia.br/11999998888</p>
+    </div>
+  );
+}

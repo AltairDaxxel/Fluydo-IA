@@ -1,17 +1,15 @@
 /**
  * Fluydo.IA - Busca inteligente em Produtos (Prisma)
- * Descrição (todas as palavras), dimensões (10%), material. Filtros: Ativo=1, Estoque>0.
+ * Regra de isolamento: ID_Emitente obrigatório em todas as consultas.
+ * Busca por: código, descrição, dim1, dim2, dim3, dim4, material.
+ * Cada termo (palavra ou número) deve aparecer em pelo menos um desses campos.
+ * Filtro: Ativo=1.
  */
 
 import { prisma } from './prisma';
 
-const TOLERANCIA_DIM = 0.1;
-
-/** Termos conhecidos de material para match no campo Material */
-const MATERIAIS_CONHECIDOS = [
-  'viton', 'nitrílica', 'nitrilica', 'nbr', 'epdm', 'silicone', 'ptfe', 'poliuretano',
-  'vedação', 'vedacao', 'borracha', 'metal', 'acrílico', 'acrilico',
-];
+/** Epsilon para comparação de decimais (evita 50.0 !== 50.0001) */
+const EPSILON_DIM = 0.001;
 
 export interface ProdutoBuscaResult {
   id: string;
@@ -26,6 +24,7 @@ export interface ProdutoBuscaResult {
   aplicacao: string | null;
   estoque: number;
   precoUnitario: number | null;
+  ipi: number | null;
 }
 
 function decimalToNumber(d: unknown): number {
@@ -47,44 +46,53 @@ function extrairNumeros(texto: string): number[] {
   return numeros;
 }
 
-/** Verifica se o produto atende às dimensões com tolerância 10% */
-function atendeDimensoes(
-  dim1: number | null, dim2: number | null, dim3: number | null,
-  valores: number[]
+/** Remove acentos para comparação (vedação = vedacao) */
+function normalizarParaBusca(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\u0300-\u036f/g, '');
+}
+
+/**
+ * Cada palavra deve aparecer em pelo menos um de: código, descrição, material.
+ */
+function atendePalavras(
+  palavras: string[],
+  descricao: string,
+  codigo: string,
+  material: string | null
 ): boolean {
-  if (valores.length === 0) return true;
-  const dims = [dim1, dim2, dim3].filter((d) => d != null) as number[];
-  if (dims.length < valores.length) return false;
-  for (let i = 0; i < valores.length; i++) {
-    const v = valores[i];
-    const min = v * (1 - TOLERANCIA_DIM);
-    const max = v * (1 + TOLERANCIA_DIM);
-    const encontrou = dims.some((d) => d >= min && d <= max);
-    if (!encontrou) return false;
-  }
-  return true;
-}
-
-/** Descrição contém todas as palavras (ordem livre) */
-function atendeDescricao(descricao: string, palavras: string[]): boolean {
   if (palavras.length === 0) return true;
-  const d = descricao.toLowerCase();
-  return palavras.every((p) => d.includes(p.toLowerCase()));
+  const d = normalizarParaBusca(descricao);
+  const c = normalizarParaBusca(codigo);
+  const m = normalizarParaBusca(material ?? '');
+  return palavras.every((palavra) => {
+    const p = normalizarParaBusca(palavra);
+    return d.includes(p) || c.includes(p) || m.includes(p);
+  });
 }
 
-/** Material coincide com algum termo da busca */
-function atendeMaterial(material: string | null, termosBusca: string[]): boolean {
-  if (!material || termosBusca.length === 0) return true;
-  const m = material.toLowerCase();
-  const termos = termosBusca.map((t) => t.toLowerCase());
-  return termos.some((t) => m.includes(t) || MATERIAIS_CONHECIDOS.some((mc) => mc.includes(t) && m.includes(mc)));
-}
-
-/** Identifica termos que parecem material */
-function termosMaterial(palavras: string[]): string[] {
-  return palavras.filter((p) =>
-    MATERIAIS_CONHECIDOS.some((mc) => mc.includes(p.toLowerCase()) || p.toLowerCase().includes(mc))
-  );
+/**
+ * Cada número deve aparecer no código (como substring) OU em alguma dimensão (dim1, dim2, dim3, dim4) com match exato.
+ */
+function atendeNumeros(
+  numeros: number[],
+  codigo: string,
+  dim1: number | null,
+  dim2: number | null,
+  dim3: number | null,
+  dim4: number | null
+): boolean {
+  if (numeros.length === 0) return true;
+  const codigoNorm = (codigo || '').toLowerCase();
+  const dims = [dim1, dim2, dim3, dim4].filter((d) => d != null) as number[];
+  const quaseIgual = (a: number, b: number) => Math.abs(a - b) < EPSILON_DIM;
+  return numeros.every((num) => {
+    const noCodigo = codigoNorm.includes(String(num));
+    const emDimensao = dims.some((d) => quaseIgual(d, num));
+    return noCodigo || emDimensao;
+  });
 }
 
 /** Mapeia resultado da busca Prisma para o formato do chat (com medidas e material) */
@@ -96,9 +104,11 @@ export function mapBuscaToChatProduto(p: ProdutoBuscaResult): {
   material?: string;
   unidade?: string | null;
   precoUnitario?: number | null;
+  ipi?: number | null;
   dim1?: number | null;
   dim2?: number | null;
   dim3?: number | null;
+  dim4?: number | null;
   medidas: { tipo_medida: string; valor_mm: number; unidade?: string }[];
 } {
   const medidas: { tipo_medida: string; valor_mm: number; unidade?: string }[] = [];
@@ -114,37 +124,51 @@ export function mapBuscaToChatProduto(p: ProdutoBuscaResult): {
     material: p.material ?? undefined,
     unidade: p.unidade,
     precoUnitario: p.precoUnitario ?? undefined,
+    ipi: p.ipi ?? undefined,
     dim1: p.dim1,
     dim2: p.dim2,
     dim3: p.dim3,
+    dim4: p.dim4,
     medidas: medidas.length > 0 ? medidas : [{ tipo_medida: 'unidade', valor_mm: 0, unidade: p.unidade ?? 'Un' }],
   };
 }
 
-export async function buscarProdutosPrisma(mensagem: string): Promise<ProdutoBuscaResult[]> {
+/**
+ * Busca produtos com isolamento por emitente.
+ * @param mensagem - Termo de busca (descrição, dimensões, material)
+ * @param idEmitente - ID do emitente da sessão (obrigatório; nenhum dado de outro emitente é retornado)
+ */
+export async function buscarProdutosPrisma(mensagem: string, idEmitente: string): Promise<ProdutoBuscaResult[]> {
+  const idEmit = (idEmitente || '').trim();
+  if (!idEmit) return [];
+
   const texto = mensagem.trim();
   const palavras = texto.split(/\s+/).map((p) => p.trim()).filter((p) => p.length > 0);
   const numeros = extrairNumeros(texto);
   const palavrasSemNumero = palavras.filter((p) => !/^\d+([.,]\d+)?$/.test(p.replace(',', '.')));
-  const termosMat = termosMaterial(palavrasSemNumero);
 
-  const produtos = await prisma.produto.findMany({
-    where: {
-      ativo: 1,
-      estoque: { gt: 0 },
-    },
-  });
+  let produtos;
+  try {
+    produtos = await prisma.produto.findMany({
+      where: {
+        idEmitente: idEmit,
+        ativo: 1, // só listar ativos; estoque pode ser zero
+      },
+    });
+  } catch (err) {
+    console.error('[busca-prisma] Erro ao buscar produtos no banco:', err);
+    return [];
+  }
 
-  return produtos
+  const antesFiltro = produtos.length;
+  const resultado = produtos
     .filter((p) => {
-      const estoqueNum = decimalToNumber(p.estoque);
-      if (estoqueNum <= 0) return false;
-      if (!atendeDescricao(p.descricao, palavrasSemNumero)) return false;
       const dim1 = p.dim1 != null ? decimalToNumber(p.dim1) : null;
       const dim2 = p.dim2 != null ? decimalToNumber(p.dim2) : null;
       const dim3 = p.dim3 != null ? decimalToNumber(p.dim3) : null;
-      if (!atendeDimensoes(dim1, dim2, dim3, numeros)) return false;
-      if (!atendeMaterial(p.material, termosMat)) return false;
+      const dim4 = p.dim4 != null ? decimalToNumber(p.dim4) : null;
+      if (!atendePalavras(palavrasSemNumero, p.descricao, p.codigo, p.material)) return false;
+      if (!atendeNumeros(numeros, p.codigo, dim1, dim2, dim3, dim4)) return false;
       return true;
     })
     .map((p) => ({
@@ -160,5 +184,32 @@ export async function buscarProdutosPrisma(mensagem: string): Promise<ProdutoBus
       aplicacao: p.aplicacao,
       estoque: decimalToNumber(p.estoque),
       precoUnitario: p.precoUnitario != null ? decimalToNumber(p.precoUnitario) : null,
+      ipi: p.ipi != null ? decimalToNumber(p.ipi) : null,
     }));
+
+  if (antesFiltro > 0 && resultado.length === 0) {
+    console.warn('[busca-prisma] idEmitente=', idEmit, 'termo=', texto, '| produtos no DB=', antesFiltro, '| após filtros (descrição/dimensões/material)=', resultado.length);
+    // Fallback: devolver uma amostra para o usuário ver que há produtos (evita "não traz nada")
+    const amostra = produtos.slice(0, 20).map((p) => ({
+      id: p.id,
+      codigo: p.codigo,
+      descricao: p.descricao,
+      dim1: p.dim1 != null ? decimalToNumber(p.dim1) : null,
+      dim2: p.dim2 != null ? decimalToNumber(p.dim2) : null,
+      dim3: p.dim3 != null ? decimalToNumber(p.dim3) : null,
+      dim4: p.dim4 != null ? decimalToNumber(p.dim4) : null,
+      material: p.material,
+      unidade: p.unidade,
+      aplicacao: p.aplicacao,
+      estoque: decimalToNumber(p.estoque),
+      precoUnitario: p.precoUnitario != null ? decimalToNumber(p.precoUnitario) : null,
+      ipi: p.ipi != null ? decimalToNumber(p.ipi) : null,
+    }));
+    return amostra;
+  }
+  if (antesFiltro === 0) {
+    console.warn('[busca-prisma] Nenhum produto no DB para idEmitente=', idEmit, 'com ativo=1. Verifique id_emitente e Ativo na tabela Produtos.');
+  }
+
+  return resultado;
 }

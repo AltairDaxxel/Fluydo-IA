@@ -60,7 +60,8 @@ export async function gerarRespostaChat(
   historico: { role: 'user' | 'model'; parts: { text: string }[] }[],
   cart: ItemCarrinho[] = [],
   lastProducts?: Produto[],
-  ultimaMensagemEraOpcoesArquivo?: boolean
+  ultimaMensagemEraOpcoesArquivo?: boolean,
+  idEmitente: string = ''
 ): Promise<ChatResponse> {
   const apiKey = process.env.GROQ_API_KEY?.trim();
   if (!apiKey) {
@@ -72,7 +73,7 @@ export async function gerarRespostaChat(
   const jaRespondeuNaConversa = historico.some((h) => h.role === 'model');
   if (!jaRespondeuNaConversa) {
     return {
-      text: 'Olá, eu sou o Fluydo.IA, assistente virtual.',
+      text: 'Olá, eu sou o Fluydo.IA, assistente virtual de vendas.',
       textoPergunta: 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido',
     };
   }
@@ -495,7 +496,7 @@ export async function gerarRespostaChat(
 
     const opcoesAposProdutos =
       (/\b1\s*-\s*.*(incluir produto no pedido|indicar o produto escolhido|qual produto|produto deseja)/i.test(ultimaRespostaAssistente) ||
-       /Produtos encontrados\./i.test(ultimaRespostaAssistente)) &&
+       /Produtos encontrados/i.test(ultimaRespostaAssistente)) &&
       /\b2\s*-\s*.*(procurar por outro|pesquisar|outro produto)/i.test(ultimaRespostaAssistente);
     if (opcoesAposProdutos) {
       if (msgTrim === '1')
@@ -544,9 +545,9 @@ export async function gerarRespostaChat(
     } else {
       let produtosEncontrados: Produto[];
 
-      if (hasDatabase()) {
+      if (hasDatabase() && idEmitente.trim()) {
         try {
-          const resultados = await buscarProdutosPrisma(mensagem);
+          const resultados = await buscarProdutosPrisma(mensagem, idEmitente.trim());
           produtosEncontrados = resultados.map((p) => mapBuscaToChatProduto(p) as unknown as Produto);
         } catch {
           const [porCodigo, porDescricao] = await Promise.all([
@@ -575,11 +576,12 @@ export async function gerarRespostaChat(
           cart: cartAtual.length > 0 ? cartAtual : undefined,
         };
       }
-      produtosRetorno = produtosEncontrados;
+      const ordenadosPorCodigo = [...produtosEncontrados].sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
+      produtosRetorno = ordenadosPorCodigo;
       return {
-        text: 'Produtos encontrados.',
+        text: `${ordenadosPorCodigo.length} Produtos encontrados.`,
         textoPergunta: '1 - Incluir produto no pedido\n2 - Procurar por outro produto',
-        produtos: produtosEncontrados,
+        produtos: ordenadosPorCodigo,
         cart: cartAtual.length > 0 ? cartAtual : undefined,
       };
     }

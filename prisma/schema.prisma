@@ -1,17 +1,31 @@
-// Fluydo.IA - Schema Prisma (SQL)
-// Ajuste o provider conforme seu banco: mysql, postgresql, sqlserver
+// Fluydo.IA - Schema Prisma (SQL Server) - Multi-emitente
+// Regra de isolamento: todas as consultas devem incluir id_emitente no WHERE.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "sqlserver"
   url      = env("DATABASE_URL")
 }
 
+model Emitente {
+  id           String    @id @db.VarChar(50)
+  cnpjEmitente String?   @map("cnpj_emitente") @db.VarChar(20)
+  telefone     String?   @map("Telefone") @db.VarChar(15)
+  nome         String?   @map("Nome") @db.VarChar(200)
+
+  produtos    Produto[]
+  clientes    Cliente[]
+  pedidos     Pedido[]
+
+  @@map("Emitentes")
+}
+
 model Produto {
-  id            String   @id @db.VarChar(50)
+  id         String   @id @db.VarChar(50)
+  idEmitente String   @map("id_emitente") @db.VarChar(50)
   codigo        String   @map("Codigo") @db.VarChar(30)
   descricao     String   @db.VarChar(100)
   dim1          Decimal? @db.Decimal(7, 3)
@@ -23,48 +37,54 @@ model Produto {
   aplicacao     String?  @map("Aplicacao") @db.VarChar(100)
   estoque       Decimal  @map("Estoque") @db.Decimal(18, 3)
   precoUnitario Decimal? @map("PrecoUnitario") @db.Decimal(18, 3)
+  ipi           Decimal? @map("IPI") @db.Decimal(6, 2)
   ativo         Int      @map("Ativo")
 
+  emitente    Emitente     @relation(fields: [idEmitente], references: [id], onDelete: NoAction, onUpdate: NoAction)
   pedidoItens PedidoItem[]
 
-  @@map("Produto")
+  @@map("Produtos")
 }
 
 model Cliente {
-  id       String  @id @db.VarChar(50)
-  cnpj     String? @map("CNPJ") @db.VarChar(20)
-  cpf      String? @map("CPF") @db.VarChar(14)
-  telefone String? @map("Telefone") @db.VarChar(30)
-  email    String? @map("e-mail") @db.VarChar(100)
-  senha    String? @map("Senha") @db.VarChar(255)
-  ativo    Int     @map("Ativo")
+  id         String  @id @db.VarChar(50)
+  idEmitente String  @map("id_emitente") @db.VarChar(50)
+  cnpj        String? @map("CNPJ") @db.VarChar(20)
+  cpf         String? @map("CPF") @db.VarChar(14)
+  telefone    String? @map("Telefone") @db.VarChar(30)
+  email       String? @map("e-mail") @db.VarChar(100)
+  senha       String? @map("Senha") @db.VarChar(255)
+  ativo       Int     @map("Ativo")
 
-  pedidos Pedido[]
+  emitente Emitente @relation(fields: [idEmitente], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  pedidos  Pedido[]
 
   @@map("Cliente")
 }
 
 model Pedido {
-  id        String   @id @db.VarChar(50)
-  clienteId String   @map("ClienteId") @db.VarChar(50)
-  createdAt DateTime @map("createdAt")
-  updatedAt DateTime @map("updatedAt")
+  id         String   @id @db.VarChar(50)
+  idEmitente String   @map("id_emitente") @db.VarChar(50)
+  clienteId  String   @map("ClienteId") @db.VarChar(50)
+  createdAt  DateTime @map("createdAt")
+  updatedAt  DateTime @map("updatedAt")
 
-  cliente Cliente       @relation(fields: [clienteId], references: [id])
-  itens   PedidoItem[]
+  emitente Emitente     @relation(fields: [idEmitente], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  cliente  Cliente      @relation(fields: [clienteId], references: [id])
+  itens    PedidoItem[]
 
   @@map("Pedido")
 }
 
 model PedidoItem {
-  id         String   @id @db.VarChar(50)
-  pedidoId   String   @map("PedidoId") @db.VarChar(50)
-  produtoId  String   @map("ProdutoId") @db.VarChar(50)
-  quantidade Decimal  @db.Decimal(18, 3)
-  precoUnit  Decimal  @map("precoUnit") @db.Decimal(18, 3)
+  id         String  @id @db.VarChar(50)
+  pedidoId   String  @map("PedidoId") @db.VarChar(50)
+  produtoId  String  @map("ProdutoId") @db.VarChar(50)
+  quantidade Decimal @db.Decimal(18, 3)
+  precoUnit  Decimal @map("precoUnit") @db.Decimal(18, 3)
 
   pedido  Pedido  @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
-  produto Produto @relation(fields: [produtoId], references: [id])
+  produto Produto @relation(fields: [produtoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("PedidoItens")
 }
