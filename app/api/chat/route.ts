@@ -104,9 +104,8 @@ export async function POST(request: NextRequest) {
     }
     if (newCart) response.cart = newCart;
     if (clearCart) response.clearCart = true;
-    const ehMostrarPedido = message.trim() === '2' && newCart && newCart.length > 0;
     const soPerguntaProduto = mainText.trim() === 'Qual é o produto que devo procurar?';
-    if ((ehMostrarPedido || exibirCarrinhoResposta) && !soPerguntaProduto) response.exibirCarrinho = true;
+    if (exibirCarrinhoResposta && !soPerguntaProduto) response.exibirCarrinho = true;
     if (perguntaText) response.textoPergunta = perguntaText;
     if (carrinhoEmBalaoSeparado) response.carrinhoEmBalaoSeparado = true;
 

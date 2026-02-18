@@ -142,6 +142,8 @@ export function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) 
   const [digitando, setDigitando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [logoErro, setLogoErro] = useState(false);
+  /** Página atual da tabela de produtos por mensagem (id da mensagem -> página 0-based) */
+  const [paginaProdutosPorMensagem, setPaginaProdutosPorMensagem] = useState<Record<string, number>>({});
   const fimRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -343,7 +345,14 @@ export function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) 
         descricao: p.descricao,
         estoque: p.estoque,
         medidas: p.medidas,
+        unidade: p.unidade ?? undefined,
+        material: p.material ?? undefined,
         precoUnitario: typeof p.precoUnitario === 'number' ? p.precoUnitario : undefined,
+        ipi: p.ipi ?? undefined,
+        dim1: p.dim1 ?? undefined,
+        dim2: p.dim2 ?? undefined,
+        dim3: p.dim3 ?? undefined,
+        dim4: p.dim4 ?? undefined,
       }));
 
       const res = await fetch('/api/chat', {
@@ -428,7 +437,7 @@ export function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) 
 
       <main style={styles.chat}>
         {mensagens.map((m) => (
-          <div key={m.id} style={styles.balaoWrap}>
+          <div key={m.id} style={{ ...styles.balaoWrap, ...(m.produtos && m.produtos.length > 0 ? {} : { maxWidth: '50ch' }) }}>
             <div
               style={{
                 ...(m.produtos && m.produtos.length > 0 ? styles.balaoComTabela : styles.balao),
@@ -441,61 +450,110 @@ export function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) 
                 </div>
               )}
             {m.produtos && m.produtos.length > 0 && (() => {
+                const ITENS_POR_PAGINA = 10;
                 const produtosOrdenados = [...m.produtos!].sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
+                const pagina = paginaProdutosPorMensagem[m.id] ?? 0;
+                const totalPaginas = Math.max(1, Math.ceil(produtosOrdenados.length / ITENS_POR_PAGINA));
+                const paginaAtual = Math.min(pagina, totalPaginas - 1);
+                const inicio = (paginaAtual === totalPaginas - 1 && produtosOrdenados.length > ITENS_POR_PAGINA)
+                  ? Math.max(0, produtosOrdenados.length - ITENS_POR_PAGINA)
+                  : paginaAtual * ITENS_POR_PAGINA;
+                const produtosPagina = produtosOrdenados.slice(inicio, inicio + ITENS_POR_PAGINA);
                 const textoContagem = m.text.replace(/^<(\d+)>\s*/, '$1 ');
                 return (
               <>
-                <div style={styles.cardProdutos}>
-                  <div style={styles.tabelaWrapProdutos}>
+                <div style={styles.cardProdutos} id={`produtos-inicio-${m.id}`}>
+                  <div className="tabela-produtos-wrap" style={styles.tabelaWrapProdutos}>
                     <div style={{ ...styles.balaoContagem, marginBottom: '0.5rem' }}>{textoContagem}</div>
-                    <table style={styles.tabelaProdutos}>
-                      <thead>
-                        <tr>
-                          <th style={styles.thProdutos}>#</th>
-                          <th style={styles.thProdutos}>Código</th>
-                          <th style={styles.thProdutosDireita}>Estoque</th>
-                          <th style={styles.thProdutosDireita}>Preço Unit.</th>
-                          <th style={styles.thProdutos}>dim1</th>
-                          <th style={styles.thProdutos}>dim2</th>
-                          <th style={styles.thProdutos}>dim3</th>
-                          <th style={styles.thProdutos}>dim4</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {produtosOrdenados.map((p, idx) => {
-                          const zebra = idx % 2 === 0 ? styles.trZebraPar : styles.trZebraImpar;
-                          const fmtNum = (n: number | null | undefined) => (n != null ? String(n) : '—');
-                          return (
-                            <React.Fragment key={p.id}>
-                              <tr style={zebra}>
-                                <td style={styles.tdProdutos}>{idx + 1}</td>
-                                <td style={styles.tdProdutos}>{p.codigo}</td>
-                                <td style={styles.tdProdutosDireita}>{p.estoque}</td>
-                                <td style={styles.tdProdutosDireita}>{p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? p.precoUnitario.toFixed(2) : String(p.precoUnitario)) : '—'}</td>
-                                <td style={styles.tdProdutos}>{fmtNum(p.dim1)}</td>
-                                <td style={styles.tdProdutos}>{fmtNum(p.dim2)}</td>
-                                <td style={styles.tdProdutos}>{fmtNum(p.dim3)}</td>
-                                <td style={styles.tdProdutos}>{fmtNum(p.dim4)}</td>
-                              </tr>
-                              <tr style={zebra}>
-                                <td style={styles.tdDescricaoProdutos} colSpan={6}>{p.descricao}</td>
-                                <td style={styles.tdProdutosCentro}>{p.unidade ?? '—'}</td>
-                                <td style={styles.tdProdutos}>{p.material ?? '—'}</td>
-                              </tr>
-                            </React.Fragment>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                    <div style={{ maxHeight: 'calc(2.5rem * 21)', overflow: 'auto' }}>
+                      <table className="tabela-produtos" style={styles.tabelaProdutos}>
+                        <colgroup>
+                          <col style={{ width: '9%' }} />
+                          <col style={{ width: '21%' }} />
+                          <col style={{ width: '10%' }} />
+                          <col style={{ width: '13%' }} />
+                          <col style={{ width: '11%' }} />
+                          <col style={{ width: '11%' }} />
+                          <col style={{ width: '13%' }} />
+                          <col style={{ width: '12%' }} />
+                        </colgroup>
+                        <thead>
+                          <tr>
+                            <th style={styles.thProdutos}>#</th>
+                            <th style={styles.thProdutos}>Código</th>
+                            <th style={styles.thProdutosDireita}>Estoque</th>
+                            <th style={styles.thProdutosDireita}>Preço Unit.</th>
+                            <th style={styles.thProdutosDireita}>dim1</th>
+                            <th style={styles.thProdutosDireita}>dim2</th>
+                            <th style={styles.thProdutosDireita}>dim3</th>
+                            <th style={styles.thProdutosDireita}>dim4</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {produtosPagina.map((p, idx) => {
+                            const zebra = idx % 2 === 0 ? styles.trZebraPar : styles.trZebraImpar;
+                            const fmtNum = (n: number | null | undefined) => (n != null ? String(n) : '—');
+                            const numeroItem = inicio + idx + 1;
+                            return (
+                              <React.Fragment key={p.id}>
+                                <tr style={zebra}>
+                                  <td style={styles.tdProdutos}>{numeroItem}</td>
+                                  <td style={styles.tdProdutos}>{p.codigo}</td>
+                                  <td style={styles.tdProdutosDireita}>{p.estoque}</td>
+                                  <td style={styles.tdProdutosDireita}>{p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? p.precoUnitario.toFixed(2) : String(p.precoUnitario)) : '—'}</td>
+                                  <td style={styles.tdProdutosDireita}>{fmtNum(p.dim1)}</td>
+                                  <td style={styles.tdProdutosDireita}>{fmtNum(p.dim2)}</td>
+                                  <td style={styles.tdProdutosDireita}>{fmtNum(p.dim3)}</td>
+                                  <td style={styles.tdProdutosDireita}>{fmtNum(p.dim4)}</td>
+                                </tr>
+                                <tr style={zebra}>
+                                  <td className="td-descricao-mobile" style={styles.tdDescricaoProdutos} colSpan={6}>{p.descricao}</td>
+                                  <td style={styles.tdProdutosCentro}>{p.unidade ?? '—'}</td>
+                                  <td style={styles.tdProdutos}>{p.material ?? '—'}</td>
+                                </tr>
+                              </React.Fragment>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                     <div style={{ ...styles.balaoContagem, marginTop: '0.5rem' }}>{textoContagem}</div>
-                    <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '0.5rem' }}>
+                    <div id={`produtos-fim-${m.id}`} style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', marginTop: '0.5rem', gap: '0.25rem' }}>
                       <button
                         type="button"
-                        onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-                        style={{ ...styles.btnPdf, marginRight: 0 }}
-                        aria-label="Ir para o início"
+                        onClick={() => setPaginaProdutosPorMensagem((prev) => ({ ...prev, [m.id]: 0 }))}
+                        disabled={paginaAtual === 0}
+                        style={{ ...styles.btnPdf, marginRight: 0, minWidth: '2.5rem', fontWeight: 700, opacity: paginaAtual === 0 ? 0.6 : 1, cursor: paginaAtual === 0 ? 'not-allowed' : 'pointer' }}
+                        aria-label="Primeira página"
                       >
-                        ir p/ inicio
+                        <strong>{'<|'}</strong>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaginaProdutosPorMensagem((prev) => ({ ...prev, [m.id]: Math.max(0, (prev[m.id] ?? 0) - 1) }))}
+                        disabled={paginaAtual === 0}
+                        style={{ ...styles.btnPdf, marginRight: 0, minWidth: '2.5rem', fontWeight: 700, opacity: paginaAtual === 0 ? 0.6 : 1, cursor: paginaAtual === 0 ? 'not-allowed' : 'pointer' }}
+                        aria-label="Página anterior"
+                      >
+                        <strong>{'<'}</strong>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaginaProdutosPorMensagem((prev) => ({ ...prev, [m.id]: (prev[m.id] ?? 0) + 1 }))}
+                        disabled={paginaAtual >= totalPaginas - 1}
+                        style={{ ...styles.btnPdf, marginRight: 0, minWidth: '2.5rem', fontWeight: 700, opacity: paginaAtual >= totalPaginas - 1 ? 0.6 : 1, cursor: paginaAtual >= totalPaginas - 1 ? 'not-allowed' : 'pointer' }}
+                        aria-label="Próxima página"
+                      >
+                        <strong>{'>'}</strong>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPaginaProdutosPorMensagem((prev) => ({ ...prev, [m.id]: totalPaginas - 1 }))}
+                        disabled={paginaAtual >= totalPaginas - 1}
+                        style={{ ...styles.btnPdf, marginRight: 0, minWidth: '2.5rem', fontWeight: 700, opacity: paginaAtual >= totalPaginas - 1 ? 0.6 : 1, cursor: paginaAtual >= totalPaginas - 1 ? 'not-allowed' : 'pointer' }}
+                        aria-label="Última página"
+                      >
+                        <strong>{'|>'}</strong>
                       </button>
                     </div>
                   </div>
@@ -590,7 +648,7 @@ export function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) 
               </div>
             )}
             </div>
-            <div style={{ ...styles.balaoRodape, ...(m.role === 'model' ? styles.balaoRodapeModel : {}) }}>
+            <div style={{ ...styles.balaoRodape, ...(m.role === 'model' ? styles.balaoRodapeModel : styles.balaoRodapeUser) }}>
               {m.role === 'user' ? 'Você' : 'Fluydo'} - {formatarDataHora(m.timestamp)}
             </div>
           </div>
@@ -776,16 +834,22 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--cinza-placeholder)',
   },
   balaoRodapeModel: {
-    marginLeft: '2.5rem',
+    marginLeft: 0,
+  },
+  balaoRodapeUser: {
+    alignSelf: 'flex-end',
+    marginRight: 0,
   },
   balaoUser: {
-    alignSelf: 'flex-start',
+    alignSelf: 'flex-end',
+    marginLeft: 'auto',
     background: 'var(--azul-principal)',
     color: 'var(--branco)',
   },
   balaoModel: {
     alignSelf: 'flex-start',
-    marginLeft: '2.5rem',
+    marginLeft: 0,
+    marginRight: 'auto',
     background: 'var(--azul-resposta)',
     color: 'var(--preto)',
     border: '1px solid rgba(30, 64, 175, 0.2)',
@@ -806,14 +870,14 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
   },
   tabelaWrapProdutos: { marginTop: 0, overflowX: 'auto', WebkitOverflowScrolling: 'touch', maxWidth: '100%' },
-  tabelaProdutos: { width: 'max-content', minWidth: '100%', borderCollapse: 'collapse', fontSize: 'var(--tabela-produtos-fs)', fontFamily: 'ui-monospace, monospace' },
-  thProdutos: { textAlign: 'left', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
-  thProdutosCentro: { textAlign: 'center', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
-  thProdutosDireita: { textAlign: 'right', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
-  tdProdutos: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
-  tdProdutosCentro: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', textAlign: 'center', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
-  tdProdutosDireita: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', textAlign: 'right', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
-  tdDescricaoProdutos: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--cinza-texto)', fontSize: 'var(--tabela-produtos-desc-fs)', wordBreak: 'break-word', lineHeight: 1.25 },
+  tabelaProdutos: { width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: 'var(--tabela-produtos-fs)', fontFamily: 'ui-monospace, monospace' },
+  thProdutos: { textAlign: 'left', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
+  thProdutosCentro: { textAlign: 'center', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
+  thProdutosDireita: { textAlign: 'right', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
+  tdProdutos: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
+  tdProdutosCentro: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', textAlign: 'center', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
+  tdProdutosDireita: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', textAlign: 'right', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
+  tdDescricaoProdutos: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--cinza-texto)', fontSize: 'var(--tabela-produtos-desc-fs)', wordBreak: 'break-word', overflowWrap: 'break-word', lineHeight: 1.25, minWidth: 0, overflow: 'hidden' },
   trZebraPar: { background: 'rgba(255,255,255,0.5)' },
   trZebraImpar: { background: 'rgba(147, 197, 253, 0.25)' },
   btnPdf: {

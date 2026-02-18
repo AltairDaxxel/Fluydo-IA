@@ -1,9 +1,15 @@
 /**
  * Fluydo.IA - Busca inteligente em Produtos (Prisma)
  * Regra de isolamento: ID_Emitente obrigatório em todas as consultas.
- * Busca por: código, descrição, dim1, dim2, dim3, dim4, material.
- * Cada termo (palavra ou número) deve aparecer em pelo menos um desses campos.
  * Filtro: Ativo=1.
+ *
+ * Regra da busca com várias palavras/números:
+ * Retorna SOMENTE produtos que coincidirem com TODAS as palavras e números.
+ * Ex.: "ce oring 20 3" → o produto deve ter:
+ *   - "ce" em código, descrição ou material;
+ *   - "oring" em código, descrição ou material;
+ *   - 20 no código (substring) ou em alguma medida (dim1, dim2, dim3, dim4);
+ *   - 3 no código (substring) ou em alguma medida.
  */
 
 import { prisma } from './prisma';
@@ -56,6 +62,7 @@ function normalizarParaBusca(s: string): string {
 
 /**
  * Cada palavra deve aparecer em pelo menos um de: código, descrição, material.
+ * Todas as palavras precisam ser atendidas (AND).
  */
 function atendePalavras(
   palavras: string[],
@@ -74,7 +81,8 @@ function atendePalavras(
 }
 
 /**
- * Cada número deve aparecer no código (como substring) OU em alguma dimensão (dim1, dim2, dim3, dim4) com match exato.
+ * Cada número deve aparecer no código (como substring) OU em alguma dimensão (dim1..dim4).
+ * Todos os números precisam ser atendidos (AND).
  */
 function atendeNumeros(
   numeros: number[],
@@ -188,24 +196,7 @@ export async function buscarProdutosPrisma(mensagem: string, idEmitente: string)
     }));
 
   if (antesFiltro > 0 && resultado.length === 0) {
-    console.warn('[busca-prisma] idEmitente=', idEmit, 'termo=', texto, '| produtos no DB=', antesFiltro, '| após filtros (descrição/dimensões/material)=', resultado.length);
-    // Fallback: devolver uma amostra para o usuário ver que há produtos (evita "não traz nada")
-    const amostra = produtos.slice(0, 20).map((p) => ({
-      id: p.id,
-      codigo: p.codigo,
-      descricao: p.descricao,
-      dim1: p.dim1 != null ? decimalToNumber(p.dim1) : null,
-      dim2: p.dim2 != null ? decimalToNumber(p.dim2) : null,
-      dim3: p.dim3 != null ? decimalToNumber(p.dim3) : null,
-      dim4: p.dim4 != null ? decimalToNumber(p.dim4) : null,
-      material: p.material,
-      unidade: p.unidade,
-      aplicacao: p.aplicacao,
-      estoque: decimalToNumber(p.estoque),
-      precoUnitario: p.precoUnitario != null ? decimalToNumber(p.precoUnitario) : null,
-      ipi: p.ipi != null ? decimalToNumber(p.ipi) : null,
-    }));
-    return amostra;
+    console.warn('[busca-prisma] idEmitente=', idEmit, 'termo=', texto, '| produtos no DB=', antesFiltro, '| nenhum produto atendeu a todos os termos');
   }
   if (antesFiltro === 0) {
     console.warn('[busca-prisma] Nenhum produto no DB para idEmitente=', idEmit, 'com ativo=1. Verifique id_emitente e Ativo na tabela Produtos.');

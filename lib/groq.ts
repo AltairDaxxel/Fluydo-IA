@@ -27,7 +27,7 @@ Produtos encontrados: o sistema já exibe os produtos em uma tabela. NÃO liste 
 
 Perguntas fora do contexto do pedido (mensagem com ? no final): pesquise (use o "Contexto da web" quando for passado), responda de forma educada e, ao final, inclua APENAS: "Mas, voltando ao seu pedido. Qual é o produto que devo procurar?" NUNCA mostre "Produtos encontrados." nem as opções "1 - Incluir produto no pedido" ou "2 - Procurar por outro produto" nesse tipo de resposta.
 
-CARRINHO E PEDIDO: Memorize os pedidos do cliente (produto e quantidade confirmados). Ao mostrar o pedido, ofereça "1 - Alterar o pedido" e "2 - Procurar por outro produto". Se 1: ofereça "1 - Alterar quantidade" e "2 - Excluir produto". Se alterar quantidade: peça "Indique o produto e a quantidade (ex: 1,15)". Se excluir: peça "Indique o produto para excluir". Quando o cliente pedir para FECHAR O PEDIDO: mostre todo o carrinho, pergunte se está correto e se deseja alterar, incluir ou excluir algum produto. Se o cliente CONFIRMAR que está correto: peça o CPF ou CNPJ. Quando o cliente informar CPF ou CNPJ, os dados de entrega e as condições de pagamento serão fornecidos a você—mostre os dados de entrega, liste as opções de pagamento, e ao final conclua o pedido, agradeça o cliente e fique pronto para iniciar outro pedido.`;
+CARRINHO E PEDIDO: Memorize os pedidos do cliente (produto e quantidade confirmados). Ao mostrar o pedido, ofereça "1 - Alterar o Pedido", "2 - Incluir outro item" e "3 - Procurar por outro produto". Se 1: ofereça "1 - Alterar quantidade" e "2 - Excluir produto". Se 2: pergunte "Indique o número do item e a quantidade. (ex.: 1 15)" e aguarde para incluir mais um item da última lista de produtos. Se 3: pergunte "Qual é o produto que devo procurar?" Se alterar quantidade: peça "Indique o produto e a quantidade (ex: 1,15)". Se excluir: peça "Indique o produto para excluir". Quando o cliente pedir para FECHAR O PEDIDO: mostre todo o carrinho, pergunte se está correto e se deseja alterar, incluir ou excluir algum produto. Se o cliente CONFIRMAR que está correto: peça o CPF ou CNPJ. Quando o cliente informar CPF ou CNPJ, os dados de entrega e as condições de pagamento serão fornecidos a você—mostre os dados de entrega, liste as opções de pagamento, e ao final conclua o pedido, agradeça o cliente e fique pronto para iniciar outro pedido.`;
 
 const GROQ_MODEL = 'llama-3.1-8b-instant';
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
@@ -102,7 +102,7 @@ export async function gerarRespostaChat(
       text: 'Segue seu pedido:',
       cart,
       exibirCarrinho: true,
-      textoPergunta: '1 - Alterar o pedido\n2 - Procurar por outro produto',
+      textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
     };
   }
 
@@ -326,8 +326,79 @@ export async function gerarRespostaChat(
       text: 'Segue seu pedido:',
       cart: cartAtual,
       exibirCarrinho: true,
-      textoPergunta: '1 - Alterar o pedido\n2 - Procurar por outro produto',
+      textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
     };
+  }
+
+  // "Listar por" / "Ordenar por" + coluna(s): a qualquer momento, reordena a última tabela (dispensa validação de opção)
+  const matchListarOrdenar = msgTrim.match(/^(?:listar|ordenar)\s+por\s+(.+)$/i);
+  if (matchListarOrdenar && lastProducts && lastProducts.length > 0) {
+    const resto = matchListarOrdenar[1].trim().toLowerCase().normalize('NFD').replace(/\u0300-\u036f/g, '');
+    const tokens = resto.split(/\s+(?:e\s+)?|\s*,\s*/).map((t) => t.trim()).filter(Boolean);
+    const colunasMap: Record<string, keyof Produto | 'precoUnitario'> = {
+      codigo: 'codigo',
+      descricao: 'descricao',
+      dim1: 'dim1',
+      'dim 1': 'dim1',
+      dim2: 'dim2',
+      'dim 2': 'dim2',
+      dim3: 'dim3',
+      'dim 3': 'dim3',
+      dim4: 'dim4',
+      'dim 4': 'dim4',
+      preco: 'precoUnitario',
+      'preco unitario': 'precoUnitario',
+      estoque: 'estoque',
+      material: 'material',
+    };
+    const labelParaKey: Record<string, string> = {
+      codigo: 'código',
+      descricao: 'descrição',
+      dim1: 'dim1',
+      dim2: 'dim2',
+      dim3: 'dim3',
+      dim4: 'dim4',
+      precoUnitario: 'preço',
+      estoque: 'estoque',
+      material: 'material',
+    };
+    type KeyProduto = keyof Produto | 'precoUnitario';
+    const keys: KeyProduto[] = [];
+    const labels: string[] = [];
+    for (const t of tokens) {
+      const dimMatch = t.match(/^dim\s*([1-4])$/);
+      const k: KeyProduto | null = colunasMap[t] ?? (dimMatch ? (`dim${dimMatch[1]}` as KeyProduto) : null);
+      if (k && !keys.includes(k)) {
+        keys.push(k);
+        labels.push(labelParaKey[k] ?? k);
+      }
+    }
+    if (keys.length > 0) {
+      const sorted = [...lastProducts].sort((a, b) => {
+        for (const key of keys) {
+          const va = (a as Record<string, unknown>)[key];
+          const vb = (b as Record<string, unknown>)[key];
+          if (typeof va === 'string' && typeof vb === 'string') {
+            const c = va.localeCompare(vb, undefined, { numeric: true });
+            if (c !== 0) return c;
+          } else if (typeof va === 'number' && typeof vb === 'number') {
+            if (va !== vb) return va - vb;
+          } else if (va != null && vb != null) {
+            const c = String(va).localeCompare(String(vb), undefined, { numeric: true });
+            if (c !== 0) return c;
+          } else if (va != null) return -1;
+          else if (vb != null) return 1;
+        }
+        return 0;
+      });
+      const labelTexto = labels.join(', ');
+      return {
+        text: `${sorted.length} Produtos ordenados por ${labelTexto}.`,
+        textoPergunta: '1 - Incluir produto no pedido\n2 - Procurar por outro produto',
+        produtos: sorted,
+        cart: cartAtual.length > 0 ? cartAtual : undefined,
+      };
+    }
   }
 
   // Quando o assistente pediu "Indique o produto e a quantidade" ou "Indique o produto para excluir",
@@ -345,18 +416,18 @@ export async function gerarRespostaChat(
           text: 'Segue seu pedido:',
           cart: cartAtual,
           exibirCarrinho: true,
-          textoPergunta: '1 - Alterar o pedido\n2 - Procurar por outro produto',
+          textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
         };
       }
       return {
         text: `Produto com índice ${itemIdx + 1} não encontrado no pedido. Por favor, verifique e tente novamente.`,
-        textoPergunta: '1 - Alterar o pedido\n2 - Procurar por outro produto',
+        textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
         cart: cartAtual,
       };
     }
     return {
       text: 'Formato inválido. Por favor, indique o número do item e a nova quantidade (ex: 1 15 ou 1,15).',
-      textoPergunta: '1 - Alterar o pedido\n2 - Procurar por outro produto',
+      textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
       cart: cartAtual,
     };
   }
@@ -371,18 +442,18 @@ export async function gerarRespostaChat(
           text: 'Segue seu pedido:',
           cart: cartAtual,
           exibirCarrinho: true,
-          textoPergunta: '1 - Alterar o pedido\n2 - Procurar por outro produto',
+          textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
         };
       }
       return {
         text: `Produto com índice ${itemIdx + 1} não encontrado no pedido. Por favor, verifique e tente novamente.`,
-        textoPergunta: '1 - Alterar o pedido\n2 - Procurar por outro produto',
+        textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
         cart: cartAtual,
       };
     }
     return {
       text: 'Formato inválido. Indique o número do item a excluir (ex: 1).',
-      textoPergunta: '1 - Alterar o pedido\n2 - Procurar por outro produto',
+      textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
       cart: cartAtual,
     };
   }
@@ -441,7 +512,7 @@ export async function gerarRespostaChat(
     }
   }
 
-  if (historico.length >= 2 && (msgTrim === '1' || msgTrim === '2')) {
+  if (historico.length >= 2 && (msgTrim === '1' || msgTrim === '2' || msgTrim === '3')) {
     const pediuDesejaExcluirDesdePendente =
       algumaRespostaTemDesejaExcluir &&
       /1\s*-\s*Não/i.test(ultimaRespostaAssistente) &&
@@ -505,9 +576,12 @@ export async function gerarRespostaChat(
         return { text: 'Qual é o produto que devo procurar?', cart: cartAtual.length > 0 ? cartAtual : undefined };
     }
     const opcoesAposPedido =
-      /1\s*-\s*Alterar o pedido/i.test(ultimaRespostaAssistente) &&
-      /2\s*-\s*Procurar por outro produto/i.test(ultimaRespostaAssistente);
+      /1\s*-\s*Alterar o Pedido/i.test(ultimaRespostaAssistente) &&
+      /2\s*-\s*Incluir outro item/i.test(ultimaRespostaAssistente) &&
+      /3\s*-\s*Procurar por outro produto/i.test(ultimaRespostaAssistente);
     if (msgTrim === '2' && opcoesAposPedido)
+      return { text: 'Indique o número do item e a quantidade. (ex.: 1 15)', cart: cartAtual.length > 0 ? cartAtual : undefined };
+    if (msgTrim === '3' && opcoesAposPedido)
       return { text: 'Qual é o produto que devo procurar?', cart: cartAtual.length > 0 ? cartAtual : undefined };
     if (msgTrim === '1' && opcoesAposPedido && cartAtual.length > 0)
       return {
@@ -528,7 +602,9 @@ export async function gerarRespostaChat(
     historico.length >= 2 &&
     /\b1\s*-\s*/.test(ultimaRespostaAssistente) &&
     /\b2\s*-\s*/.test(ultimaRespostaAssistente);
-  if (ultimaTinhaOpcoes1e2 && msgTrim !== '1' && msgTrim !== '2') {
+  const ultimaTinhaOpcao3 = /3\s*-\s*Procurar por outro produto/i.test(ultimaRespostaAssistente);
+  const opcaoInvalida = msgTrim !== '1' && msgTrim !== '2' && (msgTrim !== '3' || !ultimaTinhaOpcao3);
+  if (ultimaTinhaOpcoes1e2 && opcaoInvalida) {
     const idxOpcoes = ultimaRespostaAssistente.search(/\n?\s*1\s*-\s*/i);
     const opcoesNovamente = idxOpcoes >= 0 ? ultimaRespostaAssistente.slice(idxOpcoes).trim() : ultimaRespostaAssistente;
     return {

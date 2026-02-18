@@ -16,10 +16,46 @@
   --tabela-produtos-desc-fs: 0.6rem;
 }
 
+/* Mobile: tabela expande ao conteúdo para nada ser cortado; rolagem horizontal */
+@media (max-width: 767px) {
+  .tabela-produtos-wrap .tabela-produtos {
+    table-layout: auto !important;
+    width: max-content !important;
+    min-width: 100%;
+  }
+  .tabela-produtos-wrap .tabela-produtos col {
+    width: auto;
+  }
+  .tabela-produtos-wrap .tabela-produtos th,
+  .tabela-produtos-wrap .tabela-produtos td {
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    max-width: none !important;
+  }
+  .tabela-produtos-wrap .tabela-produtos .td-descricao-mobile {
+    white-space: normal !important;
+    word-break: break-word !important;
+    overflow-wrap: break-word !important;
+    min-width: 12rem;
+  }
+}
+
 @media (min-width: 768px) {
   :root {
     --tabela-produtos-fs: 0.8rem;
     --tabela-produtos-desc-fs: 0.75rem;
+  }
+  .tabela-produtos-wrap {
+    width: 520px;
+    max-width: 520px;
+  }
+  /* Coluna # com largura mínima para o número do item aparecer inteiro (ex.: 811) */
+  .tabela-produtos-wrap .tabela-produtos th:first-child,
+  .tabela-produtos-wrap .tabela-produtos td:first-child {
+    min-width: 2.75rem;
+    max-width: none !important;
+    box-sizing: border-box;
   }
 }
 
