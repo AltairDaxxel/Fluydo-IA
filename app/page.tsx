@@ -432,7 +432,7 @@ export function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) 
           )}
           <div style={styles.headerSlogan}>Solução sob medida com agilidade digital</div>
         </div>
-        <div style={styles.headerVersao}>Versão 1.0.1</div>
+        <div style={styles.headerVersao}>Versão 1.1.6</div>
       </header>
 
       <main style={styles.chat}>
