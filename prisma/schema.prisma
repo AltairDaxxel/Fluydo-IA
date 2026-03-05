@@ -16,9 +16,10 @@ model Emitente {
   telefone     String?   @map("Telefone") @db.VarChar(15)
   nome         String?   @map("Nome") @db.VarChar(200)
 
-  produtos    Produto[]
-  clientes    Cliente[]
-  pedidos     Pedido[]
+  produtos   Produto[]
+  clientes   Cliente[]
+  pedidos    Pedido[]
+  pagamentos Pagamento[]
 
   @@map("Emitentes")
 }
@@ -87,4 +88,87 @@ model PedidoItem {
   produto Produto @relation(fields: [produtoId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("PedidoItens")
+}
+
+model Pagamento {
+  id         String  @id @db.VarChar(50)
+  idEmitente String  @map("id_emitente") @db.VarChar(50)
+  codigo     String  @map("Codigo") @db.VarChar(20)
+  descricao  String  @map("Descricao") @db.VarChar(100)
+
+  emitente Emitente @relation(fields: [idEmitente], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("Pagamentos")
+}
+
+// Tabela de linhas de produto: regra pré-busca (exclusiva/bloqueada).
+// Bloqueada = 'S' ou Aplicacao = 'Exclusiva' => não listar produtos, retornar mensagem fixa.
+// ID no banco é GUID (string); use @db.UniqueIdentifier() se a coluna for uniqueidentifier.
+model Linha {
+  id        String  @id @map("ID") @db.VarChar(36)
+  linha     String  @map("Linha") @db.VarChar(30)
+  descricao String  @map("Descricao") @db.VarChar(200)
+  bloqueada String? @map("Bloqueada") @db.VarChar(1)
+  aplicacao String? @map("Aplicacao") @db.VarChar(50)
+
+  @@map("Linhas")
+}
+
+// Termos de produto oficiais: busca usa só palavras que estão aqui (ex.: "preciso de guia de nylon com 62" → busca "guia nylon 62").
+model Vocabulario {
+  id        String @id @db.VarChar(50)
+  descricao String @map("Descricao") @db.VarChar(100)
+
+  @@map("Vocabulario")
+}
+
+// Mensagens e textos do sistema (zero hardcoding no código)
+model Configuracao {
+  id    String @id @map("Chave") @db.VarChar(80)
+  valor String @map("Valor") @db.NVarChar(Max)
+
+  @@map("Configuracoes")
+}
+
+// Sistema de ajuda — conteúdo carregado apenas do SQL Server
+model FluydoAjuda {
+  id         Int      @id @default(autoincrement())
+  slug       String   @db.VarChar(100)
+  titulo     String   @db.VarChar(200)
+  resumo     String?  @db.VarChar(500)
+  conteudoMd String   @map("ConteudoMd") @db.NVarChar(Max)
+  tags       String?  @db.VarChar(200)
+  ordem      Int      @default(0)
+  ativo      Int      @default(1)
+  visibilidade String @db.VarChar(20)
+
+  gatilhos FluydoAjudaGatilho[]
+  exemplos FluydoAjudaExemplo[]
+
+  @@unique([slug])
+  @@map("FluydoAjuda")
+}
+
+model FluydoAjudaGatilho {
+  id         Int    @id @default(autoincrement())
+  ajudaId    Int    @map("AjudaId")
+  padrao     String @map("Padrao") @db.VarChar(100)
+  tipoPadrao String @map("TipoPadrao") @db.VarChar(20)
+  peso       Int    @default(1)
+  ativo      Int    @default(1)
+
+  ajuda FluydoAjuda @relation(fields: [ajudaId], references: [id], onDelete: Cascade)
+  @@map("FluydoAjudaGatilhos")
+}
+
+model FluydoAjudaExemplo {
+  id        Int     @id @default(autoincrement())
+  ajudaId   Int     @map("AjudaId")
+  exemplo   String  @db.VarChar(500)
+  observacao String? @map("Observacao") @db.VarChar(300)
+  ordem     Int     @default(0)
+  ativo     Int     @default(1)
+
+  ajuda FluydoAjuda @relation(fields: [ajudaId], references: [id], onDelete: Cascade)
+  @@map("FluydoAjudaExemplos")
 }

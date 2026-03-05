@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { EmitenteProvider } from '../context/EmitenteContext';
-import { ChatPage } from '../page';
+import { ChatPage } from '../components/ChatPage';
 
 export default function ParceiroPage() {
   const params = useParams();
@@ -74,7 +74,13 @@ export default function ParceiroPage() {
   );
 }
 
-const styles: React.CSSProperties & Record<string, React.CSSProperties> = {
+const styles: {
+  container: React.CSSProperties;
+  centered: React.CSSProperties;
+  loading: React.CSSProperties;
+  erroTitulo: React.CSSProperties;
+  erroTexto: React.CSSProperties;
+} = {
   container: {
     display: 'flex',
     flexDirection: 'column',

@@ -11,9 +11,9 @@
   --branco: #fff;
   --preto: #111;
   --sombra: 0 1px 3px rgba(0, 0, 0, 0.12);
-  /* Tabela de produtos: menor no celular, maior no desktop */
-  --tabela-produtos-fs: 0.65rem;
-  --tabela-produtos-desc-fs: 0.6rem;
+  /* Tabela de produtos: fonte 15–16px, scroll horizontal */
+  --tabela-produtos-fs: 15px;
+  --tabela-produtos-desc-fs: 14px;
 }
 
 /* Mobile: tabela expande ao conteúdo para nada ser cortado; rolagem horizontal */
@@ -43,19 +43,11 @@
 
 @media (min-width: 768px) {
   :root {
-    --tabela-produtos-fs: 0.8rem;
-    --tabela-produtos-desc-fs: 0.75rem;
+    --tabela-produtos-fs: 16px;
+    --tabela-produtos-desc-fs: 15px;
   }
   .tabela-produtos-wrap {
-    width: 520px;
-    max-width: 520px;
-  }
-  /* Coluna # com largura mínima para o número do item aparecer inteiro (ex.: 811) */
-  .tabela-produtos-wrap .tabela-produtos th:first-child,
-  .tabela-produtos-wrap .tabela-produtos td:first-child {
-    min-width: 2.75rem;
-    max-width: none !important;
-    box-sizing: border-box;
+    max-width: 100%;
   }
 }
 

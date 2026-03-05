@@ -5,8 +5,8 @@
 import type { Produto } from '@/types';
 import { consultarEstoque } from './estoque';
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'llama-3.1-8b-instant';
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_MODEL_DEFAULT = 'meta-llama/llama-3.1-8b-instruct';
 
 export interface ItemPedidoInterpretado {
   termo: string;
@@ -39,7 +39,7 @@ function parseJsonArray(str: string): ItemPedidoInterpretado[] {
 }
 
 export async function interpretarListaProdutos(texto: string): Promise<PedidoInterpretado> {
-  const apiKey = process.env.GROQ_API_KEY?.trim();
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) {
     return {
       isLista: false,
@@ -48,6 +48,7 @@ export async function interpretarListaProdutos(texto: string): Promise<PedidoInt
       textoResposta: 'Erro: API não configurada.',
     };
   }
+  const model = process.env.OPENROUTER_MODEL?.trim() || OPENROUTER_MODEL_DEFAULT;
 
   const promptUsuario = `Analise o texto abaixo. Se for uma lista de produtos (códigos, descrições e quantidades), extraia cada item.
 Responda APENAS com um JSON array, sem explicação, no formato: [{"termo": "código ou descrição do produto", "quantidade": número}]
@@ -56,14 +57,14 @@ Se não for lista de produtos, responda apenas: []
 Texto:
 ${texto.slice(0, 6000)}`;
 
-  const res = await fetch(GROQ_URL, {
+  const res = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model,
       messages: [
         {
           role: 'user',

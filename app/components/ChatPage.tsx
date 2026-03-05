@@ -2,6 +2,22 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 
+function MarkdownText({ text }: { text: string }) {
+  const html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/\n/g, '<br />');
+  return <div dangerouslySetInnerHTML={{ __html: html }} />;
+}
+import { getSelectedItems, type QtyMap } from '@/lib/orderQuantity';
+
 type ProdutoParaPdf = {
   codigo: string;
   descricao: string;
@@ -98,6 +114,7 @@ interface Mensagem {
     estoque: number;
     material?: string;
     unidade?: string;
+    aplicacao?: string | null;
     precoUnitario?: number | string;
     ipi?: number | null;
     dim1?: number | null;
@@ -111,6 +128,15 @@ interface Mensagem {
   /** Tabela do pedido vindo do arquivo (item, código, unidade, qtd, estoque, preço unit, total, descrição) */
   itensArquivo?: Array<{ codigo: string; descricao: string; unidade: string; quantidade: number; estoque: number | ''; precoUnitario: number | null; precoTotal: number | null }>;
   totalArquivo?: number;
+  /** Artigo de ajuda (FluydoAjuda + exemplos) para renderizar Markdown */
+  artigoAjuda?: {
+    id: number;
+    slug: string;
+    titulo: string;
+    resumo?: string | null;
+    conteudoMd: string;
+    exemplos: Array<{ id: number; exemplo: string; observacao?: string | null }>;
+  };
 }
 
 interface ItemCarrinho {
@@ -127,7 +153,7 @@ interface ChatPageProps {
   nomeEmitente?: string;
 }
 
-function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
+export function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
   const [mensagens, setMensagens] = useState<Mensagem[]>(() => {
     const t = Date.now();
     return [
@@ -143,10 +169,12 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
   const [digitando, setDigitando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [logoErro, setLogoErro] = useState(false);
-  /** Página atual da tabela de produtos por mensagem (id da mensagem -> página 0-based) */
-  const [paginaProdutosPorMensagem, setPaginaProdutosPorMensagem] = useState<Record<string, number>>({});
+  /** Quantidade por mensagem e código (messageId -> codigo -> number | ''). Só itens com qtd > 0 entram no pedido. */
+  const [quantidadePorMensagem, setQuantidadePorMensagem] = useState<Record<string, QtyMap>>({});
+  /** Quantidade editada na tabela do pedido (messageId -> codigo -> quantidade) para exibir no input e manter no carrinho. */
+  const [quantidadeCarrinhoPorMensagem, setQuantidadeCarrinhoPorMensagem] = useState<{ [messageId: string]: { [codigo: string]: number } }>({});
   const fimRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const formatarDataHora = (ts?: number) => {
@@ -328,6 +356,48 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
       }
     }
 
+    // Fluxo especial: comando "pedir"/"incluir no pedido" — só inclui itens com Quantidade preenchida e > 0
+    const textoLower = texto.toLowerCase();
+    const ehComandoPedir =
+      /\bpedir\b/.test(textoLower) ||
+      /\bincluir\b/.test(textoLower) ||
+      /incluir\s+no\s+pedido/.test(textoLower) ||
+      /colocar\s+no\s+pedido/.test(textoLower) ||
+      /\badicionar\b/.test(textoLower) ||
+      /adicionar\s+ao\s+pedido/.test(textoLower);
+    if (ehComandoPedir) {
+      const ultimaComProdutos = [...mensagens].reverse().find((m) => m.role === 'model' && m.produtos && m.produtos.length > 0);
+      if (ultimaComProdutos && ultimaComProdutos.produtos && ultimaComProdutos.produtos.length > 0) {
+        const qtyMap = quantidadePorMensagem[ultimaComProdutos.id] ?? {};
+        const selected = getSelectedItems(ultimaComProdutos.produtos, qtyMap) as ItemCarrinho[];
+
+        setMensagens((prev) => [...prev, userMsg]);
+        if (textoOverride === undefined) setInput('');
+
+        if (selected.length === 0) {
+          const modelMsg: Mensagem = {
+            id: crypto.randomUUID(),
+            role: 'model',
+            text: "Beleza — me diga a quantidade no campo 'Quantidade' dos itens que você quer, e aí eu incluo no pedido.",
+            timestamp: Date.now(),
+          };
+          setMensagens((prev) => [...prev, modelMsg]);
+          return;
+        }
+
+        setCarrinho((prev) => [...prev, ...selected]);
+        const resumo: Mensagem = {
+          id: crypto.randomUUID(),
+          role: 'model',
+          text:
+            'Itens incluídos no pedido. Você pode digitar "ver pedido" para conferir, "buscar produto" para pesquisar outro ou "finalizar pedido" para concluir.',
+          timestamp: Date.now(),
+        };
+        setMensagens((prev) => [...prev, resumo]);
+        return;
+      }
+    }
+
     setMensagens((prev) => [...prev, userMsg]);
     if (textoOverride === undefined) setInput('');
     setErro(null);
@@ -388,6 +458,7 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
         id: crypto.randomUUID(),
         role: 'model',
         text: data.text,
+        ...(data.artigoAjuda ? { artigoAjuda: data.artigoAjuda } : {}),
         timestamp: now,
         produtos: data.produtos,
         ...(data.exibirCarrinho && data.cart?.length && !data.carrinhoEmBalaoSeparado ? { carrinho: data.cart } : {}),
@@ -409,6 +480,26 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
           timestamp: Date.now(),
         };
         setMensagens((prev) => [...prev, perguntaMsg]);
+      }
+
+      if (data.downloadPdf) {
+        const ultimaComProdutos = [...mensagens].reverse().find((m) => m.role === 'model' && m.produtos && m.produtos.length > 0);
+        if (ultimaComProdutos?.produtos?.length) {
+          const lista = ultimaComProdutos.produtos.map((p) => ({
+            codigo: p.codigo,
+            descricao: p.descricao,
+            estoque: p.estoque,
+            unidade: p.unidade ?? null,
+            material: p.material ?? null,
+            precoUnitario: p.precoUnitario ?? null,
+            ipi: p.ipi ?? null,
+            dim1: p.dim1 ?? null,
+            dim2: p.dim2 ?? null,
+            dim3: p.dim3 ?? null,
+            dim4: p.dim4 ?? null,
+          }));
+          exportarProdutosParaPdf(lista, nomeEmitente);
+        }
       }
     } catch (err) {
       setErro(err instanceof Error ? err.message : 'Erro de conexão');
@@ -437,177 +528,258 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
 
       <main style={styles.chat}>
         {mensagens.map((m) => (
-          <div key={m.id} style={{ ...styles.balaoWrap, ...(m.produtos && m.produtos.length > 0 ? {} : { maxWidth: '50ch' }) }}>
+          <div key={m.id} style={{ ...styles.balaoWrap, ...(m.produtos && m.produtos.length > 0 || (m.carrinho && m.carrinho.length > 0) ? {} : { maxWidth: '50ch' }) }}>
             <div
               style={{
-                ...(m.produtos && m.produtos.length > 0 ? styles.balaoComTabela : styles.balao),
+                ...((m.produtos && m.produtos.length > 0) || (m.carrinho && m.carrinho.length > 0) ? styles.balaoComTabela : styles.balao),
                 ...(m.role === 'user' ? styles.balaoUser : styles.balaoModel),
               }}
             >
-              {!(m.produtos && m.produtos.length > 0) && (
+              {!(m.produtos && m.produtos.length > 0) && !(m.carrinho && m.carrinho.length > 0) && !m.artigoAjuda && (
                 <div style={m.role === 'user' ? styles.textoUser : styles.textoModel}>
                   {m.text}
                 </div>
               )}
+              {m.artigoAjuda && m.role === 'model' && (
+                <div style={styles.ajudaArtigo}>
+                  <h3 style={styles.ajudaTitulo}>{m.artigoAjuda.titulo}</h3>
+                  <div style={styles.ajudaConteudo}>
+                    <MarkdownText text={m.artigoAjuda.conteudoMd} />
+                  </div>
+                  {m.artigoAjuda.exemplos && m.artigoAjuda.exemplos.length > 0 && (
+                    <div style={styles.ajudaExemplos}>
+                      <div style={styles.ajudaExemplosTitulo}>Exemplos:</div>
+                      {m.artigoAjuda.exemplos.map((ex) => (
+                        <div key={ex.id} style={styles.ajudaExemploItem}>
+                          <span style={styles.ajudaExemplo}>{ex.exemplo}</span>
+                          {ex.observacao && <span style={styles.ajudaExemploObs}>{ex.observacao}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             {m.produtos && m.produtos.length > 0 && (() => {
-                const ITENS_POR_PAGINA = 5;
                 const produtosOrdenados = [...m.produtos!].sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
-                const pagina = paginaProdutosPorMensagem[m.id] ?? 0;
-                const totalPaginas = Math.max(1, Math.ceil(produtosOrdenados.length / ITENS_POR_PAGINA));
-                const paginaAtual = Math.min(pagina, totalPaginas - 1);
-                const inicio = (paginaAtual === totalPaginas - 1 && produtosOrdenados.length > ITENS_POR_PAGINA)
-                  ? Math.max(0, produtosOrdenados.length - ITENS_POR_PAGINA)
-                  : paginaAtual * ITENS_POR_PAGINA;
-                const produtosPagina = produtosOrdenados.slice(inicio, inicio + ITENS_POR_PAGINA);
                 const textoContagem = m.text.replace(/^<(\d+)>\s*/, '$1 ');
+                const qtyMap = quantidadePorMensagem[m.id] ?? {};
+                const setQty = (codigo: string, value: number | '') => {
+                  setQuantidadePorMensagem((prev) => {
+                    const atual = prev[m.id] ?? {};
+                    const novo = { ...atual };
+                    if (value === '' || value === 0) delete novo[codigo];
+                    else novo[codigo] = value;
+                    return { ...prev, [m.id]: novo };
+                  });
+                };
+                const fmtNum = (n: number | null | undefined) => (n != null ? String(n) : '—');
                 return (
               <>
                 <div style={styles.cardProdutos} id={`produtos-inicio-${m.id}`}>
                   <div className="tabela-produtos-wrap" style={styles.tabelaWrapProdutos}>
                     <div style={{ ...styles.balaoContagem, marginBottom: '0.5rem' }}>{textoContagem}</div>
-                    <div style={{ maxHeight: 'calc(2.5rem * 21)', overflow: 'auto' }}>
+                    <div style={styles.gridScrollWrap}>
                       <table className="tabela-produtos" style={styles.tabelaProdutos}>
                         <colgroup>
-                          <col style={{ width: '9%' }} />
-                          <col style={{ width: '21%' }} />
-                          <col style={{ width: '10%' }} />
-                          <col style={{ width: '13%' }} />
-                          <col style={{ width: '11%' }} />
-                          <col style={{ width: '11%' }} />
-                          <col style={{ width: '13%' }} />
-                          <col style={{ width: '12%' }} />
+                          <col style={{ width: '25ch' }} />
+                          <col style={{ width: '5ch' }} />
+                          <col style={{ width: '15ch' }} />
+                          <col style={{ width: '15ch' }} />
+                          <col style={{ width: '15ch' }} />
+                          <col style={{ width: '6ch' }} />
+                          <col style={{ width: '8ch' }} />
+                          <col style={{ width: '8ch' }} />
+                          <col style={{ width: '8ch' }} />
+                          <col style={{ width: '8ch' }} />
+                          <col style={{ width: '100ch' }} />
+                          <col style={{ width: '100ch' }} />
                         </colgroup>
                         <thead>
                           <tr>
-                            <th style={styles.thProdutos}>#</th>
                             <th style={styles.thProdutos}>Código</th>
+                            <th style={styles.thProdutos}>Unit.</th>
                             <th style={styles.thProdutosDireita}>Estoque</th>
+                            <th style={styles.thProdutos}>Quantidade</th>
                             <th style={styles.thProdutosDireita}>Preço Unit.</th>
-                            <th style={styles.thProdutosDireita}>dim1</th>
-                            <th style={styles.thProdutosDireita}>dim2</th>
-                            <th style={styles.thProdutosDireita}>dim3</th>
-                            <th style={styles.thProdutosDireita}>dim4</th>
+                            <th style={styles.thProdutosDireita}>%IPI</th>
+                            <th style={styles.thProdutosDireita}>Dim1</th>
+                            <th style={styles.thProdutosDireita}>Dim2</th>
+                            <th style={styles.thProdutosDireita}>Dim3</th>
+                            <th style={styles.thProdutosDireita}>Dim4</th>
+                            <th style={styles.thProdutos}>Descrição</th>
+                            <th style={styles.thProdutos}>Aplicação</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {produtosPagina.map((p, idx) => {
+                          {produtosOrdenados.map((p, idx) => {
                             const zebra = idx % 2 === 0 ? styles.trZebraPar : styles.trZebraImpar;
-                            const fmtNum = (n: number | null | undefined) => (n != null ? String(n) : '—');
-                            const numeroItem = inicio + idx + 1;
+                            const qtyVal = qtyMap[p.codigo];
+                            const qtyDisplay = qtyVal === '' || qtyVal === undefined ? '' : String(qtyVal);
                             return (
-                              <React.Fragment key={p.id}>
-                                <tr style={zebra}>
-                                  <td style={styles.tdProdutos}>{numeroItem}</td>
-                                  <td style={styles.tdProdutos}>{p.codigo}</td>
-                                  <td style={styles.tdProdutosDireita}>{p.estoque}</td>
-                                  <td style={styles.tdProdutosDireita}>{p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? p.precoUnitario.toFixed(2) : String(p.precoUnitario)) : '—'}</td>
-                                  <td style={styles.tdProdutosDireita}>{fmtNum(p.dim1)}</td>
-                                  <td style={styles.tdProdutosDireita}>{fmtNum(p.dim2)}</td>
-                                  <td style={styles.tdProdutosDireita}>{fmtNum(p.dim3)}</td>
-                                  <td style={styles.tdProdutosDireita}>{fmtNum(p.dim4)}</td>
-                                </tr>
-                                <tr style={zebra}>
-                                  <td className="td-descricao-mobile" style={styles.tdDescricaoProdutos} colSpan={6}>{p.descricao}</td>
-                                  <td style={styles.tdProdutosCentro}>{p.unidade ?? '—'}</td>
-                                  <td style={styles.tdProdutos}>{p.material ?? '—'}</td>
-                                </tr>
-                              </React.Fragment>
+                              <tr key={p.id} style={zebra}>
+                                <td style={styles.tdProdutos}>{p.codigo}</td>
+                                <td style={styles.tdProdutosCentro}>{p.unidade ?? '—'}</td>
+                                <td style={styles.tdProdutosDireita}>{p.estoque}</td>
+                                <td style={styles.tdProdutos}>
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={qtyDisplay}
+                                    onChange={(e) => {
+                                      const raw = e.target.value.replace(/\D/g, '');
+                                      if (raw === '') {
+                                        setQty(p.codigo, '');
+                                        return;
+                                      }
+                                      const n = parseInt(raw, 10);
+                                      if (!Number.isNaN(n) && n >= 0) setQty(p.codigo, n);
+                                    }}
+                                    style={styles.inputQty}
+                                    aria-label={`Quantidade para ${p.codigo}`}
+                                  />
+                                </td>
+                                <td style={styles.tdProdutosDireita}>{p.precoUnitario != null ? (typeof p.precoUnitario === 'number' ? p.precoUnitario.toFixed(2) : String(p.precoUnitario)) : '—'}</td>
+                                <td style={styles.tdProdutosDireita}>{p.ipi != null ? (typeof p.ipi === 'number' ? p.ipi.toFixed(2) : String(p.ipi)) : '—'}</td>
+                                <td style={styles.tdProdutosDireita}>{fmtNum(p.dim1)}</td>
+                                <td style={styles.tdProdutosDireita}>{fmtNum(p.dim2)}</td>
+                                <td style={styles.tdProdutosDireita}>{fmtNum(p.dim3)}</td>
+                                <td style={styles.tdProdutosDireita}>{fmtNum(p.dim4)}</td>
+                                <td style={styles.tdProdutosDescricao}>{p.descricao}</td>
+                                <td style={styles.tdProdutos}>{p.aplicacao ?? '—'}</td>
+                              </tr>
                             );
                           })}
                         </tbody>
                       </table>
                     </div>
-                    <div style={{ ...styles.balaoContagem, marginTop: '0.5rem' }}>{textoContagem}</div>
-                    <div id={`produtos-fim-${m.id}`} style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', marginTop: '0.5rem', gap: '0.25rem' }}>
-                      <button
-                        type="button"
-                        onClick={() => setPaginaProdutosPorMensagem((prev) => ({ ...prev, [m.id]: 0 }))}
-                        disabled={paginaAtual === 0}
-                        style={{ ...styles.btnPdf, marginRight: 0, minWidth: '2.5rem', fontWeight: 700, opacity: paginaAtual === 0 ? 0.6 : 1, cursor: paginaAtual === 0 ? 'not-allowed' : 'pointer' }}
-                        aria-label="Primeira página"
-                      >
-                        <strong>{'<|'}</strong>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPaginaProdutosPorMensagem((prev) => ({ ...prev, [m.id]: Math.max(0, (prev[m.id] ?? 0) - 1) }))}
-                        disabled={paginaAtual === 0}
-                        style={{ ...styles.btnPdf, marginRight: 0, minWidth: '2.5rem', fontWeight: 700, opacity: paginaAtual === 0 ? 0.6 : 1, cursor: paginaAtual === 0 ? 'not-allowed' : 'pointer' }}
-                        aria-label="Página anterior"
-                      >
-                        <strong>{'<'}</strong>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPaginaProdutosPorMensagem((prev) => ({ ...prev, [m.id]: (prev[m.id] ?? 0) + 1 }))}
-                        disabled={paginaAtual >= totalPaginas - 1}
-                        style={{ ...styles.btnPdf, marginRight: 0, minWidth: '2.5rem', fontWeight: 700, opacity: paginaAtual >= totalPaginas - 1 ? 0.6 : 1, cursor: paginaAtual >= totalPaginas - 1 ? 'not-allowed' : 'pointer' }}
-                        aria-label="Próxima página"
-                      >
-                        <strong>{'>'}</strong>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPaginaProdutosPorMensagem((prev) => ({ ...prev, [m.id]: totalPaginas - 1 }))}
-                        disabled={paginaAtual >= totalPaginas - 1}
-                        style={{ ...styles.btnPdf, marginRight: 0, minWidth: '2.5rem', fontWeight: 700, opacity: paginaAtual >= totalPaginas - 1 ? 0.6 : 1, cursor: paginaAtual >= totalPaginas - 1 ? 'not-allowed' : 'pointer' }}
-                        aria-label="Última página"
-                      >
-                        <strong>{'|>'}</strong>
-                      </button>
-                    </div>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => exportarProdutosParaPdf(produtosOrdenados.map((p) => ({ codigo: p.codigo, descricao: p.descricao, estoque: p.estoque, unidade: p.unidade ?? null, material: p.material ?? null, precoUnitario: p.precoUnitario ?? null, ipi: p.ipi ?? null, dim1: p.dim1 ?? null, dim2: p.dim2 ?? null, dim3: p.dim3 ?? null, dim4: p.dim4 ?? null })), nomeEmitente)}
-                  style={styles.btnPdf}
-                  aria-label="Baixar lista de produtos em PDF"
-                >
-                  📄 Baixar PDF
-                </button>
               </>
                 );
               })()}
             {m.carrinho && m.carrinho.length > 0 && (() => {
               const itens = m.carrinho!;
-              const totalPedido = itens.reduce((s, i) => s + (i.quantidade * (i.precoUnitario ?? 0)), 0);
+              const qtyCarrinhoMap = quantidadeCarrinhoPorMensagem[m.id] ?? {};
+              const setQtyCarrinho = (codigo: string, value: number) => {
+                setQuantidadeCarrinhoPorMensagem((prev) => ({ ...prev, [m.id]: { ...(prev[m.id] ?? {}), [codigo]: value } }));
+                if (value === 0) {
+                  setCarrinho((prev) => prev.filter((it) => it.codigo !== codigo));
+                } else {
+                  setCarrinho((prev) => {
+                    const idx = prev.findIndex((it) => it.codigo === codigo);
+                    if (idx >= 0) return prev.map((it) => (it.codigo === codigo ? { ...it, quantidade: value } : it));
+                    const itemFromMessage = itens.find((i) => i.codigo === codigo);
+                    if (!itemFromMessage) return prev;
+                    return [...prev, { ...itemFromMessage, quantidade: value }];
+                  });
+                }
+              };
+              const itemComDims = itens as Array<{ codigo: string; descricao: string; quantidade: number; precoUnitario?: number; unidade?: string; ipi?: number | null; dim1?: number | null; dim2?: number | null; dim3?: number | null; dim4?: number | null; aplicacao?: string }>;
+              const valorProdutos = itens.reduce((s, i) => {
+                const q = qtyCarrinhoMap[i.codigo] ?? i.quantidade;
+                if (q <= 0) return s;
+                return s + q * (i.precoUnitario ?? 0);
+              }, 0);
+              const valorIPI = itens.reduce((s, i) => {
+                const q = qtyCarrinhoMap[i.codigo] ?? i.quantidade;
+                if (q <= 0) return s;
+                const precoUnit = i.precoUnitario ?? 0;
+                const ipiPct = (i as { ipi?: number | null }).ipi ?? 0;
+                return s + (q * precoUnit * ipiPct) / 100;
+              }, 0);
+              const totalGeral = valorProdutos + valorIPI;
+              const fmtNum = (n: number | null | undefined) => (n != null ? String(n) : '—');
+              const fmtMoeda = (v: number) => (v > 0 ? v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—');
+              const valorProdutosFormatado = valorProdutos.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+              const valorIPIFormatado = valorIPI.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+              const totalFormatado = totalGeral.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
               return (
-                <div style={styles.tabelaWrap}>
-                  <table style={styles.tabela}>
-                    <thead>
-                      <tr>
-                        <th style={styles.th}>Item</th>
-                        <th style={styles.th}>Código</th>
-                        <th style={styles.th}>Unidade</th>
-                        <th style={styles.th}>Quantidade</th>
-                        <th style={styles.th}>Preço Unit.</th>
-                        <th style={styles.th}>Preço Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {itens.map((item, idx) => {
-                        const precoUnit = item.precoUnitario ?? 0;
-                        const precoTotal = item.quantidade * precoUnit;
-                        return (
-                          <React.Fragment key={`${item.codigo}-${idx}`}>
-                            <tr>
-                              <td style={styles.td}>{idx + 1}</td>
-                              <td style={styles.td}>{item.codigo}</td>
-                              <td style={styles.td}>Un</td>
-                              <td style={styles.td}>{item.quantidade}</td>
-                              <td style={styles.td}>{precoUnit > 0 ? `R$ ${precoUnit.toFixed(2)}` : '—'}</td>
-                              <td style={styles.td}>{precoTotal > 0 ? `R$ ${precoTotal.toFixed(2)}` : '—'}</td>
-                            </tr>
-                            <tr>
-                              <td style={styles.tdDescricao} colSpan={6}>{item.descricao}</td>
-                            </tr>
-                          </React.Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  <p style={styles.totalPedido}>Total do pedido: R$ {totalPedido.toFixed(2)}</p>
+                <div style={styles.cardProdutos}>
+                  <div className="tabela-produtos-wrap" style={styles.tabelaWrapProdutos}>
+                    <div style={{ ...styles.balaoContagem, marginBottom: '0.5rem' }}>Segue seu pedido:</div>
+                    <div style={styles.gridScrollWrap}>
+                      <table className="tabela-produtos" style={{ ...styles.tabelaProdutos, minWidth: '318ch' }}>
+                        <colgroup>
+                          <col style={{ width: '10ch' }} />
+                          <col style={{ width: '25ch' }} />
+                          <col style={{ width: '6ch' }} />
+                          <col style={{ width: '15ch' }} />
+                          <col style={{ width: '10ch' }} />
+                          <col style={{ width: '15ch' }} />
+                          <col style={{ width: '6ch' }} />
+                          <col style={{ width: '8ch' }} />
+                          <col style={{ width: '8ch' }} />
+                          <col style={{ width: '8ch' }} />
+                          <col style={{ width: '8ch' }} />
+                          <col style={{ width: '100ch' }} />
+                          <col style={{ width: '100ch' }} />
+                        </colgroup>
+                        <thead>
+                          <tr>
+                            <th style={styles.thProdutosDireita}>Item</th>
+                            <th style={styles.thProdutos}>Código</th>
+                            <th style={styles.thProdutos}>Unit.</th>
+                            <th style={styles.thProdutosDireita}>Quantidade</th>
+                            <th style={styles.thProdutosDireita}>Preço Unit.</th>
+                            <th style={styles.thProdutosDireita}>Preço Total</th>
+                            <th style={styles.thProdutosDireita}>%IPI</th>
+                            <th style={styles.thProdutosDireita}>Dim1</th>
+                            <th style={styles.thProdutosDireita}>Dim2</th>
+                            <th style={styles.thProdutosDireita}>Dim3</th>
+                            <th style={styles.thProdutosDireita}>Dim4</th>
+                            <th style={styles.thProdutos}>Descrição</th>
+                            <th style={styles.thProdutos}>Aplicação</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {itemComDims.map((item, idx) => {
+                            const precoUnit = item.precoUnitario ?? 0;
+                            const qty = qtyCarrinhoMap[item.codigo] ?? item.quantidade;
+                            const precoTotal = qty * precoUnit;
+                            const qtyDisplay = String(qty);
+                            const zebra = idx % 2 === 0 ? styles.trZebraPar : styles.trZebraImpar;
+                            return (
+                              <tr key={`${item.codigo}-${idx}`} style={zebra}>
+                                <td style={styles.tdProdutosDireita}>{idx + 1}</td>
+                                <td style={styles.tdProdutos}>{item.codigo}</td>
+                                <td style={styles.tdProdutosCentro}>{item.unidade ?? '—'}</td>
+                                <td style={styles.tdProdutosDireita}>
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={qtyDisplay}
+                                    onChange={(e) => {
+                                      const raw = e.target.value.replace(/\D/g, '');
+                                      if (raw === '') {
+                                        setQtyCarrinho(item.codigo, 0);
+                                        return;
+                                      }
+                                      const n = parseInt(raw, 10);
+                                      if (!Number.isNaN(n) && n >= 0) setQtyCarrinho(item.codigo, n);
+                                    }}
+                                    style={styles.inputQty}
+                                    aria-label={`Quantidade para ${item.codigo}`}
+                                  />
+                                </td>
+                                <td style={styles.tdProdutosDireita}>{fmtMoeda(precoUnit)}</td>
+                                <td style={styles.tdProdutosDireita}>{fmtMoeda(precoTotal)}</td>
+                                <td style={styles.tdProdutosDireita}>{(item as { ipi?: number | null }).ipi != null ? (Number((item as { ipi?: number | null }).ipi).toFixed(2)) : '—'}</td>
+                                <td style={styles.tdProdutosDireita}>{fmtNum(item.dim1)}</td>
+                                <td style={styles.tdProdutosDireita}>{fmtNum(item.dim2)}</td>
+                                <td style={styles.tdProdutosDireita}>{fmtNum(item.dim3)}</td>
+                                <td style={styles.tdProdutosDireita}>{fmtNum(item.dim4)}</td>
+                                <td style={styles.tdProdutosDescricao}>{item.descricao}</td>
+                                <td style={styles.tdProdutos}>{item.aplicacao ?? '—'}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={styles.totalPedidoMoldura}>
+                      Valor dos produtos: {valorProdutosFormatado} | Valor do IPI: {valorIPIFormatado} | Valor Total: {totalFormatado}
+                    </div>
+                  </div>
                 </div>
               );
             })()}
@@ -634,8 +806,8 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
                           <td style={styles.td}>{r.unidade}</td>
                           <td style={styles.td}>{r.quantidade}</td>
                           <td style={styles.td}>{r.estoque === '' ? '—' : r.estoque}</td>
-                          <td style={styles.td}>{r.precoUnitario != null ? `R$ ${Number(r.precoUnitario).toFixed(2)}` : '—'}</td>
-                          <td style={styles.td}>{r.precoTotal != null ? `R$ ${Number(r.precoTotal).toFixed(2)}` : '—'}</td>
+                          <td style={styles.td}>{r.precoUnitario != null ? Number(r.precoUnitario).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
+                          <td style={styles.td}>{r.precoTotal != null ? Number(r.precoTotal).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
                         </tr>
                         <tr>
                           <td style={styles.tdDescricao} colSpan={7}>{r.descricao || '—'}</td>
@@ -644,7 +816,7 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
                     ))}
                   </tbody>
                 </table>
-                {(m.totalArquivo ?? 0) >= 0 && <p style={styles.totalPedido}>Total do pedido: R$ {(m.totalArquivo ?? 0).toFixed(2)}</p>}
+                {(m.totalArquivo ?? 0) >= 0 && <p style={styles.totalPedido}>Total do pedido: {(m.totalArquivo ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>}
               </div>
             )}
             </div>
@@ -667,8 +839,6 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
         <div ref={fimRef} />
       </main>
 
-      <p style={styles.avisoIa}>daxxel sistemas - 0.1.2 - O Fluydo é uma IA e pode cometer erros.</p>
-
       <div style={styles.inputArea}>
         <input
           ref={fileInputRef}
@@ -680,7 +850,37 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
             if (f) handleUploadOrder(f);
           }}
         />
-        <div style={styles.inputRow}>
+        <div style={styles.balaoInput}>
+          <textarea
+            ref={inputRef}
+            placeholder="Digite uma mensagem"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSendMessage();
+              }
+            }}
+            style={styles.input}
+            disabled={digitando}
+            rows={2}
+            autoFocus
+          />
+          <button
+            type="button"
+            onClick={() => handleSendMessage()}
+            disabled={digitando || !input.trim()}
+            style={{
+              ...styles.btnEnviar,
+              ...(digitando || !input.trim() ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+            }}
+            aria-label="Enviar"
+          >
+            ➤
+          </button>
+        </div>
+        <div style={styles.botoesAbaixo}>
           <button
             type="button"
             onClick={() => {
@@ -688,57 +888,35 @@ function ChatPage({ idEmitente = '', nomeEmitente = '' }: ChatPageProps) {
               fileInputRef.current?.click();
             }}
             disabled={digitando}
-            style={styles.btnAnexo}
+            style={styles.btnEnviarArquivo}
             aria-label="Enviar arquivo ou foto com lista de produtos"
             title="Enviar arquivo ou foto com lista de produtos"
           >
-            📎
+            Enviar Arquivo
           </button>
-          <input
-            ref={inputRef}
-            type="text"
-            placeholder="Digite uma mensagem"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSendMessage()}
-            style={styles.input}
-            disabled={digitando}
-            autoFocus
-          />
           <button
-          type="button"
-          onClick={() => handleSendMessage()}
-          disabled={digitando || !input.trim()}
-          style={{
-            ...styles.btn,
-            ...(digitando || !input.trim() ? { opacity: 0.7, cursor: 'not-allowed' } : {}),
-          }}
-          aria-label="Enviar"
+            type="button"
+            onClick={() => {
+              if (digitando) return;
+              const t = Date.now();
+              setMensagens([
+                { id: 'inicial-1', role: 'model', text: TEXTO_SAUDACAO, timestamp: t },
+                { id: 'inicial-2', role: 'model', text: TEXTO_MENU_INICIAL, timestamp: t },
+              ]);
+              setCarrinho([]);
+              setPendingFileOrder(null);
+              setAguardandoAlterarArquivo(false);
+              setAguardandoExcluirArquivo(false);
+              setErro(null);
+            }}
+            disabled={digitando}
+            style={styles.btnLimpar}
+            aria-label="Limpar conversa e recomeçar"
           >
-            ➤
+            Limpar
           </button>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            if (digitando) return;
-            const t = Date.now();
-            setMensagens([
-              { id: 'inicial-1', role: 'model', text: TEXTO_SAUDACAO, timestamp: t },
-              { id: 'inicial-2', role: 'model', text: TEXTO_MENU_INICIAL, timestamp: t },
-            ]);
-            setCarrinho([]);
-            setPendingFileOrder(null);
-            setAguardandoAlterarArquivo(false);
-            setAguardandoExcluirArquivo(false);
-            setErro(null);
-          }}
-          disabled={digitando}
-          style={styles.btnLimpar}
-          aria-label="Limpar conversa e recomeçar"
-        >
-          Limpar
-        </button>
+        <p style={styles.avisoIa}>daxxel sistemas - 0.1.2 - O Fluydo é uma IA e pode cometer erros.</p>
       </div>
     </div>
   );
@@ -808,10 +986,11 @@ const styles: Record<string, React.CSSProperties> = {
     overflowWrap: 'break-word' as const,
   },
   balaoComTabela: {
+    width: '100%',
     maxWidth: '100%',
     padding: '0.5rem 0.35rem',
     borderRadius: 12,
-    alignSelf: 'flex-start',
+    alignSelf: 'stretch',
     wordBreak: 'break-word' as const,
     overflowWrap: 'break-word' as const,
   },
@@ -856,12 +1035,22 @@ const styles: Record<string, React.CSSProperties> = {
   },
   textoUser: { fontSize: '0.95rem', color: 'var(--branco)', fontWeight: 500 },
   textoModel: { fontSize: '0.95rem', whiteSpace: 'pre-wrap', fontWeight: 700, fontStyle: 'italic', color: 'var(--preto)' },
+  ajudaArtigo: { marginTop: '0.5rem', fontSize: '0.95rem', lineHeight: 1.5, fontFamily: 'inherit', fontStyle: 'italic' },
+  ajudaTitulo: { margin: '0 0 0.5rem', fontSize: '0.95rem', fontWeight: 700, fontFamily: 'inherit', fontStyle: 'italic' },
+  ajudaConteudo: { marginBottom: '0.75rem', fontFamily: 'inherit', fontStyle: 'italic' },
+  ajudaExemplos: { marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid rgba(0,0,0,0.1)', fontStyle: 'italic' },
+  ajudaExemplosTitulo: { fontWeight: 700, marginBottom: '0.35rem', fontSize: '0.95rem', fontFamily: 'inherit', fontStyle: 'italic' },
+  ajudaExemploItem: { marginBottom: '0.25rem' },
+  ajudaExemplo: { fontSize: '0.95rem', fontFamily: 'inherit', fontStyle: 'italic' },
+  ajudaExemploObs: { marginLeft: '0.5rem', fontSize: '0.95rem', color: 'var(--cinza-texto)', fontFamily: 'inherit', fontStyle: 'italic' },
   digitando: { fontSize: '0.9rem', color: 'var(--cinza-placeholder)', fontWeight: 700, fontStyle: 'italic' },
   tabelaWrap: { marginTop: '0.75rem', overflowX: 'auto' },
   tabela: { width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' },
   th: { textAlign: 'left', padding: '0.4rem 0.5rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: 'var(--azul-escuro)' },
   td: { padding: '0.35rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)' },
   tdDescricao: { padding: '0.35rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)' },
+  tdTotalPedido: { padding: '0.4rem 0.5rem', borderTop: '2px solid var(--azul-principal)', borderRight: '1px solid rgba(0,0,0,0.12)', fontWeight: 700, fontSize: 'var(--tabela-produtos-fs)', color: 'var(--preto)', fontFamily: 'ui-monospace, monospace' },
+  totalPedidoMoldura: { padding: '0.4rem 0.5rem', borderTop: '2px solid var(--azul-principal)', fontWeight: 700, fontSize: 'var(--tabela-produtos-fs)', color: 'var(--preto)', fontFamily: 'ui-monospace, monospace', background: 'var(--azul-resposta)' },
   cardProdutos: {
     marginTop: 0,
     padding: '0.3rem 0.2rem',
@@ -869,15 +1058,38 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: '100%',
     minWidth: 0,
   },
-  tabelaWrapProdutos: { marginTop: 0, overflowX: 'auto', WebkitOverflowScrolling: 'touch', maxWidth: '100%' },
-  tabelaProdutos: { width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: 'var(--tabela-produtos-fs)', fontFamily: 'ui-monospace, monospace' },
-  thProdutos: { textAlign: 'left', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
-  thProdutosCentro: { textAlign: 'center', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
-  thProdutosDireita: { textAlign: 'right', padding: '0.2rem 0.35rem', borderBottom: '2px solid var(--azul-principal)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
-  tdProdutos: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
-  tdProdutosCentro: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', textAlign: 'center', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
-  tdProdutosDireita: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--preto)', textAlign: 'right', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 0 },
-  tdDescricaoProdutos: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', color: 'var(--cinza-texto)', fontSize: 'var(--tabela-produtos-desc-fs)', wordBreak: 'break-word', overflowWrap: 'break-word', lineHeight: 1.25, minWidth: 0, overflow: 'hidden' },
+  tabelaWrapProdutos: { marginTop: 0, maxWidth: '100%' },
+  gridScrollWrap: {
+    maxHeight: 'calc(2.5rem * 5)',
+    overflowX: 'auto',
+    overflowY: 'auto',
+    WebkitOverflowScrolling: 'touch',
+  },
+  tabelaProdutos: {
+    width: '100%',
+    minWidth: '302ch',
+    tableLayout: 'fixed',
+    borderCollapse: 'collapse',
+    fontSize: 'var(--tabela-produtos-fs)',
+    fontFamily: 'ui-monospace, monospace',
+  },
+  thProdutos: { textAlign: 'left', padding: '0.35rem 0.5rem', borderBottom: '2px solid var(--azul-principal)', borderRight: '1px solid rgba(0,0,0,0.15)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  thProdutosCentro: { textAlign: 'center', padding: '0.35rem 0.5rem', borderBottom: '2px solid var(--azul-principal)', borderRight: '1px solid rgba(0,0,0,0.15)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  thProdutosDireita: { textAlign: 'right', padding: '0.35rem 0.5rem', borderBottom: '2px solid var(--azul-principal)', borderRight: '1px solid rgba(0,0,0,0.15)', fontWeight: 700, color: '#D6FF38', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  tdProdutos: { padding: '0.3rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)', borderRight: '1px solid rgba(0,0,0,0.12)', color: 'var(--preto)', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  tdProdutosCentro: { padding: '0.3rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)', borderRight: '1px solid rgba(0,0,0,0.12)', color: 'var(--preto)', textAlign: 'center', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap' },
+  tdProdutosDireita: { padding: '0.3rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)', borderRight: '1px solid rgba(0,0,0,0.12)', color: 'var(--preto)', textAlign: 'right', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  tdProdutosDescricao: { padding: '0.3rem 0.5rem', borderBottom: '1px solid rgba(0,0,0,0.08)', borderRight: '1px solid rgba(0,0,0,0.12)', color: 'var(--cinza-texto)', fontSize: 'var(--tabela-produtos-fs)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+  inputQty: {
+    width: '4rem',
+    padding: '0.25rem 0.35rem',
+    border: '1px solid rgba(0,0,0,0.2)',
+    borderRadius: 6,
+    fontSize: 'var(--tabela-produtos-fs)',
+    fontFamily: 'inherit',
+    textAlign: 'right',
+  },
+  tdDescricaoProdutos: { padding: '0.18rem 0.35rem', borderBottom: '1px solid rgba(0,0,0,0.08)', borderRight: '1px solid rgba(0,0,0,0.12)', color: 'var(--cinza-texto)', fontSize: 'var(--tabela-produtos-desc-fs)', wordBreak: 'break-word', overflowWrap: 'break-word', lineHeight: 1.25, minWidth: 0, overflow: 'hidden' },
   trZebraPar: { background: 'rgba(255,255,255,0.5)' },
   trZebraImpar: { background: 'rgba(147, 197, 253, 0.25)' },
   btnPdf: {
@@ -890,27 +1102,6 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none',
     borderRadius: 8,
     cursor: 'pointer',
-    alignSelf: 'flex-start',
-  },
-  totalPedido: { marginTop: '0.5rem', marginBottom: 0, fontSize: '1rem', fontWeight: 700, color: 'var(--azul-escuro)' },
-  tabelaPergunta: { marginTop: '0.5rem', marginBottom: 0, fontSize: '0.9rem', fontWeight: 600, color: 'var(--azul-escuro)' },
-  cards: { display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem' },
-  card: {
-    padding: '0.6rem 0.75rem',
-    background: 'var(--azul-fundo)',
-    borderRadius: 8,
-    borderLeft: '3px solid var(--azul-claro)',
-  },
-  cardSeparador: { marginTop: '1rem' },
-  cardNumero: { fontWeight: 700, color: 'var(--azul-principal)', marginBottom: '0.35rem' },
-  cardLinha: { fontSize: '0.85rem', marginTop: '0.2rem', lineHeight: 1.4 },
-  cardPergunta: { fontSize: '0.9rem', fontWeight: 600, marginTop: '0.5rem', color: 'var(--azul-escuro)' },
-  erro: {
-    padding: '0.5rem 0.75rem',
-    background: '#fef2f2',
-    color: '#b91c1c',
-    borderRadius: 8,
-    fontSize: '0.9rem',
   },
   inputArea: {
     padding: '0.75rem 1rem',
@@ -919,23 +1110,79 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: '0.5rem',
+    width: '100%',
+    maxWidth: '100%',
+    alignSelf: 'stretch',
   },
-  inputRow: { display: 'flex', gap: '0.5rem', alignItems: 'center', flex: 1, minWidth: 0 },
-  btnAnexo: {
-    width: 48,
-    height: 48,
-    borderRadius: '50%',
+  balaoInput: {
+    display: 'flex',
+    alignItems: 'flex-end',
+    gap: '0.5rem',
+    padding: '0.5rem 0.6rem',
+    borderRadius: 20,
     border: '1px solid rgba(0,0,0,0.12)',
     background: 'var(--azul-fundo)',
-    fontSize: '1.4rem',
+    minHeight: 0,
+    maxWidth: '100%',
+  },
+  input: {
+    flex: 1,
+    minWidth: 0,
+    padding: '0.6rem 0.5rem',
+    border: 'none',
+    borderRadius: 14,
+    background: 'transparent',
+    fontFamily: 'inherit',
+    fontSize: '0.95rem',
+    lineHeight: 1.45,
+    color: 'var(--preto)',
+    outline: 'none',
+    resize: 'none',
+  },
+  btnEnviar: {
+    width: 40,
+    height: 40,
+    flexShrink: 0,
+    borderRadius: '50%',
+    border: 'none',
+    background: 'var(--verde-lima)',
+    color: 'var(--preto)',
+    fontSize: '1.2rem',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  btnAnexo: {
+    width: 40,
+    height: 40,
     flexShrink: 0,
+    borderRadius: '50%',
+    border: '1px solid rgba(0,0,0,0.12)',
+    background: 'var(--branco)',
+    fontSize: '1.1rem',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  botoesAbaixo: {
+    display: 'flex',
+    flexDirection: 'row',
+    gap: '0.5rem',
+    flexWrap: 'wrap',
+  },
+  btnEnviarArquivo: {
+    padding: '0.4rem 0.75rem',
+    fontSize: '0.85rem',
+    border: '1px solid rgba(0,0,0,0.15)',
+    borderRadius: 8,
+    background: 'transparent',
+    color: 'var(--cinza-placeholder)',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
   },
   btnLimpar: {
-    alignSelf: 'flex-start',
     padding: '0.4rem 0.75rem',
     fontSize: '0.85rem',
     border: '1px solid rgba(0,0,0,0.15)',
@@ -947,47 +1194,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   avisoIa: {
     margin: 0,
-    marginTop: '0.5rem',
-    marginBottom: '0.35rem',
-    paddingLeft: 'calc(1rem + 48px + 0.5rem)',
-    paddingRight: '1rem',
-    fontSize: '0.75rem',
+    marginTop: '0.25rem',
+    paddingLeft: '0.25rem',
+    fontSize: '0.7rem',
     color: 'var(--cinza-placeholder)',
-  },
-  input: {
-    flex: 1,
-    padding: '0.75rem 1rem',
-    border: 'none',
-    borderRadius: 24,
-    background: 'var(--azul-fundo)',
-    fontFamily: 'inherit',
-    fontSize: '0.95rem',
-    fontWeight: 700,
-    color: '#000',
-    outline: 'none',
-  },
-  btn: {
-    width: 48,
-    height: 48,
-    borderRadius: '50%',
-    border: 'none',
-    background: 'var(--verde-lima)',
-    color: 'var(--preto)',
-    fontSize: '1.4rem',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    opacity: 0.85,
   },
 };
-
-/** Página raiz: orienta a acessar via URL do parceiro (fluydo.ia.br/[telefone]) */
-export default function RootPage() {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', background: 'var(--azul-fundo)', alignContent: 'center', justifyContent: 'center', padding: '2rem', textAlign: 'center' as const }}>
-      <p style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--verde-lima)', marginBottom: '0.5rem' }}>Fluydo.IA</p>
-      <p style={{ fontSize: '1.1rem', color: 'var(--cinza-texto)', marginBottom: '0.5rem' }}>Acesse via o link do seu parceiro.</p>
-      <p style={{ fontSize: '0.95rem', color: 'var(--azul-header)', fontWeight: 600 }}>Exemplo: fluydo.ia.br/11999998888</p>
-    </div>
-  );
-}

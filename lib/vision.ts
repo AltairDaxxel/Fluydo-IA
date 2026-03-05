@@ -1,26 +1,27 @@
 /**
- * Extrai texto de imagem via Groq Vision (Llama 4 Scout).
+ * Extrai texto de imagem via OpenRouter (modelo com suporte a visão).
  */
 
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL_VISION = 'meta-llama/llama-4-scout-17b-16e-instruct';
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_MODEL_VISION_DEFAULT = 'meta-llama/llama-3.2-11b-vision-instruct';
 
 export async function extrairTextoDeImagem(
   base64: string,
   mimeType: string
 ): Promise<string> {
-  const apiKey = process.env.GROQ_API_KEY?.trim();
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) return '';
 
+  const model = process.env.OPENROUTER_MODEL_VISION?.trim() || OPENROUTER_MODEL_VISION_DEFAULT;
   const url = `data:${mimeType};base64,${base64}`;
-  const res = await fetch(GROQ_URL, {
+  const res = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: GROQ_MODEL_VISION,
+      model,
       messages: [
         {
           role: 'user',

@@ -1,6 +1,6 @@
 /**
- * Fluydo.AI - Chat com Groq (API OpenAI-compatible).
- * Modelo rápido para conversa.
+ * Fluydo.AI - Chat via OpenRouter (API OpenAI-compatible).
+ * Modelo configurável via OPENROUTER_MODEL (ex.: meta-llama/llama-3.1-8b-instruct).
  */
 
 import path from 'path';
@@ -10,27 +10,60 @@ import { buscarNaWeb } from './busca-web';
 import { consultarEstoque } from './estoque';
 import { buscarClientePorCpfCnpj, listarCondicoesPagamento } from './clientes';
 import { hasDatabase } from './prisma';
-import { buscarProdutosPrisma, mapBuscaToChatProduto } from './busca-prisma';
+import { buscarProdutosPrisma, buscarProdutosPorCodigo, mapBuscaToChatProduto } from './busca-prisma';
+import { findLinhaMatch, isLinhaBloqueadaOuExclusiva, searchProductsByLinha, extractLinhaCandidates } from './linhas';
+import { getConfig, CONFIG_KEYS } from './configuracoes';
+import { listarPagamentos, formatarOpcoesPagamentos } from './pagamentos';
+import { buscarEnderecoPorCep, formatarEnderecoParaChat } from './cep';
+import { intelligentSearchEngine } from './search/intelligentSearchEngine';
+import { parseToleranceCommand } from './search/tolerance';
+import { buildClarifyingQuestion } from './search/messagePolicy';
+import { getVocabularySearchTerms } from './search/productVocabulary';
+import { parseMeasures, parseMaterialDureza } from './search/measureParser';
+import { checkSocialTrigger } from './search/socialTriggers';
+import { getHelpBySlug, getHelpSuggestions, listHelpArticles, isExplicitHelpRequest } from './help/fluydoAjuda';
+import type { AjudaArtigo, AjudaArtigoComExemplos } from './help/types';
 
 config({ path: path.resolve(process.cwd(), '.env.local') });
 config({ path: path.join(__dirname, '..', '.env.local') });
 
 const SYSTEM_PROMPT_BASE = `Você é o Fluydo. Seu objetivo como agente de IA é vender. Todas as mensagens do cliente devem ser interpretadas por você e você deve sempre responder: entenda o que ele quer, o contexto e a intenção, e dê uma resposta humanizada—natural, cordial e próxima, como um atendente real. Evite respostas robóticas; adapte o tom à situação. Seja direto mas caloroso.
 
-SAUDAÇÃO: Na primeira resposta use: "Olá, eu sou o Fluydo, assistente virtual de IA." Em outro balão: "Você pode pesquisar produtos por código, descrição ou medidas. Mas se quiser fazer uma pergunta específica, como por exemplo, como funciona uma vedação? use sempre o sinal de interrogação no final da frase." Em outro balão: "Qual é o produto que devo procurar?" Não use bom dia, boa tarde nem boa noite. Nunca pergunte o nome do cliente; exclua todas as situações que pedem o nome.
+SAUDAÇÃO: Na primeira resposta use: "Olá, eu sou o Fluydo, assistente virtual de IA." Em outro balão: "Você pode pesquisar por código, descrição ou medidas. Use 'medida' ou 'com medida' + números para filtrar por dimensão (ex.: retentor medida 130). Use 'linha' + letras para filtrar por início do código. Para perguntas gerais, termine com ?" Em outro balão: "Qual é o produto que devo procurar?" Não use bom dia, boa tarde nem boa noite. Nunca pergunte o nome do cliente; exclua todas as situações que pedem o nome.
 
 Use "produtos" (nunca "produtos para vedação industrial").
 
-PADRÃO DE OPÇÕES: Em todas as interações em que você oferecer escolhas ao cliente, use sempre o formato enumerado, uma opção por linha, e aguarde o código (número). Exemplo: "1 - [opção A]\n2 - [opção B]\n\nAguardo o código 1 ou 2."
+INTERPRETAÇÃO HUMANA DE PEDIDOS: As pessoas pedem produtos de muitas formas diferentes. Você deve entender a INTENÇÃO, não apenas as palavras exatas. Considere:
+- formas técnicas completas (ex.: "oring 28 x 3,53", "retentor 110 x 130 x 13")
+- formas técnicas com material (ex.: "oring 28 x 3,53 nbr", "oring 28x3,53 viton", "anel nbr 46 x 2")
+- só medidas (ex.: "28 x 3,53", "110x130x13", "20 x 4")
+- uma única medida com tipo (ex.: "oring 28", "retentor 110", "anel 46", "tem oring 28?")
+- pedidos com aplicação (ex.: "oring para eixo 28", "retentor para eixo 110", "vedação para pistão 30")
+- pedidos informais (ex.: "preciso de um oring", "to procurando um anel 46", "tem vedação 20 x 4?")
+- erros de escrita e formatação (ex.: "oring 28x353", "oring 28 por 3,53", "o ring 28 3,53")
+- descrições e contexto de máquina (ex.: "vedação para eixo 28", "oring para bomba hidráulica", "retentor para eixo de trator")
+- pedidos genéricos ou incompletos (ex.: "preciso de vedação", "preciso de um", "tem isso aí?")
+- pedidos com vários itens de uma vez, inclusive em estilo WhatsApp.
 
-Produtos encontrados: o sistema já exibe os produtos em uma tabela. NÃO liste os produtos no seu texto. Em outro balão pergunte, uma opção por linha: "1 - Incluir produto no pedido" (linha 1) e "2 - Procurar por outro produto" (linha 2). Se o cliente responder 1: pergunte "Indique o número do item e a quantidade. (ex.: 1 15)". Quando o cliente responder com item e quantidade (ex.: 1 15): se a quantidade for maior que o estoque, diga que o estoque é insuficiente e ofereça "1 - Manter a quantidade" e "2 - Alterar a quantidade". Se responder 1 (manter), inclua no pedido com a quantidade solicitada. Se responder 2 (alterar), pergunte "Qual é a quantidade?" e repita a verificação de estoque. Se o cliente responder 2 (pesquisar outro): pergunte "Qual é o produto que devo procurar?" Busca é feita no banco. Se não encontrar, use a mensagem padrão do sistema.
+REGRAS PARA ESSA INTERPRETAÇÃO:
+1) Nunca assuma medidas erradas. Se faltar medida importante, pergunte (uma pergunta por vez).
+2) Sempre que possível, normalize números (ponto/vírgula, "28x3,53", "28 x 3.53", "28x353") e tente buscar antes de pedir esclarecimento.
+3) Use material, aplicação e contexto (eixo, pistão, bomba, trator etc.) como filtros adicionais quando fizer sentido.
+4) Quando o cliente fala só de "vedação", "oring", "retentor", "anel" sem medidas, explique gentilmente que precisa das medidas e dê exemplos (ex.: "Normalmente vem como 28 x 3,53").
+5) Se o cliente mandar vários itens, trate cada linha como um possível produto.
 
-Perguntas fora do contexto do pedido (mensagem com ? no final): pesquise (use o "Contexto da web" quando for passado), responda de forma educada e, ao final, inclua APENAS: "Mas, voltando ao seu pedido. Qual é o produto que devo procurar?" NUNCA mostre "Produtos encontrados." nem as opções "1 - Incluir produto no pedido" ou "2 - Procurar por outro produto" nesse tipo de resposta.
+LISTA DE PRODUTOS ENCONTRADOS: o sistema já exibe os produtos em uma tabela com checkbox na primeira coluna. NÃO liste os produtos no seu texto. Quando houver resultados, use um texto curto e natural, por exemplo:
+- "Encontrei algumas opções que combinam com o que você descreveu. Informe as quantidades dos produtos desejados, e ao final digite 'pedir' para adicionar os produtos ao pedido."
+- "Achei X produtos. Informe as quantidades dos produtos desejados, e ao final digite 'pedir' para adicionar os produtos ao pedido."
 
-CARRINHO E PEDIDO: Memorize os pedidos do cliente (produto e quantidade confirmados). Ao mostrar o pedido, ofereça "1 - Alterar o Pedido", "2 - Incluir outro item" e "3 - Procurar por outro produto". Se 1: ofereça "1 - Alterar quantidade" e "2 - Excluir produto". Se 2: pergunte "Indique o número do item e a quantidade. (ex.: 1 15)" e aguarde para incluir mais um item da última lista de produtos. Se 3: pergunte "Qual é o produto que devo procurar?" Se alterar quantidade: peça "Indique o produto e a quantidade (ex: 1,15)". Se excluir: peça "Indique o produto para excluir". Quando o cliente pedir para FECHAR O PEDIDO: mostre todo o carrinho, pergunte se está correto e se deseja alterar, incluir ou excluir algum produto. Se o cliente CONFIRMAR que está correto: peça o CPF ou CNPJ. Quando o cliente informar CPF ou CNPJ, os dados de entrega e as condições de pagamento serão fornecidos a você—mostre os dados de entrega, liste as opções de pagamento, e ao final conclua o pedido, agradeça o cliente e fique pronto para iniciar outro pedido.`;
+NÃO ofereça mais o menu "1 - Incluir produto no pedido / 2 - Procurar por outro produto". Em vez disso, confie na intuição do cliente: ele pode digitar coisas como "incluir no pedido", "colocar no pedido", "adicionar ao pedido", "ver pedido", "buscar produto" e você deve se adaptar a isso.
 
-const GROQ_MODEL = 'llama-3.1-8b-instant';
-const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+PERGUNTAS FORA DO CONTEXTO DO PEDIDO (mensagem com ? no final): pesquise (use o "Contexto da web" quando for passado), responda de forma educada e, ao final, inclua APENAS: "Mas, voltando ao seu pedido. Qual é o produto que devo procurar?" NUNCA escreva menus numéricos depois dessa frase.
+
+CARRINHO E PEDIDO: Memorize os pedidos do cliente (produto e quantidade confirmados). Ao mostrar o pedido, você pode oferecer opções, mas não é obrigatório usar apenas números. Frases como "Você pode digitar 'ver pedido' para conferir, 'buscar produto' para pesquisar outro ou 'finalizar pedido' para concluir." são bem-vindas. Quando o cliente pedir para FECHAR O PEDIDO: mostre todo o carrinho, pergunte se está correto e se deseja alterar, incluir ou excluir algum produto. Se o cliente CONFIRMAR que está correto: peça o CPF ou CNPJ. Quando o cliente informar CPF ou CNPJ, os dados de entrega e as condições de pagamento serão fornecidos a você—mostre os dados de entrega, liste as opções de pagamento, e ao final conclua o pedido, agradeça o cliente e fique pronto para iniciar outro pedido.`;
+
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const OPENROUTER_MODEL_DEFAULT = 'meta-llama/llama-3.1-8b-instruct';
 
 export interface ChatResponse {
   text: string;
@@ -42,6 +75,12 @@ export interface ChatResponse {
   textoPergunta?: string;
   /** Quando true, frontend exibe o texto em um balão e o carrinho em outro balão separado */
   carrinhoEmBalaoSeparado?: boolean;
+  /** Comando "baixar pdf": frontend gera PDF da última tabela de resultados */
+  downloadPdf?: boolean;
+  /** Artigo de ajuda completo (FluydoAjuda + exemplos) para renderizar Markdown */
+  artigoAjuda?: AjudaArtigoComExemplos;
+  /** Lista de artigos (menu ou sugestões) */
+  artigosAjuda?: AjudaArtigo[];
 }
 
 interface OpenAIMessage {
@@ -55,6 +94,38 @@ const CPF_CNPJ_REGEX = /\b\d{11,14}\b/;
 const FRASE_VOLTANDO_PEDIDO = 'Mas, voltando ao seu pedido. Qual é o produto que devo procurar?';
 const FRASE_VOLTANDO_PEDIDO_REGEX = /Mas,?\s*voltando ao seu pedido\.?\s*Qual é o produto que devo procurar\??/i;
 
+/** Mensagem de orientação (início ou após excluir/voltar), sem menu numérico */
+const TEXTO_INICIAL_CONVERSA =
+  "Ainda não sabe como pesquisar? Digite ajuda ou ? para ver as dicas.\n\nComo posso te ajudar agora?";
+
+/** Palavras de ruído para ignorar ao extrair candidato a código (ex.: "quero o código VD-001" → VD-001) */
+const RUIDO_CODIGO = new Set([
+  'de', 'da', 'do', 'das', 'dos', 'para', 'pra', 'por', 'um', 'uma', 'o', 'a', 'os', 'as', 'no', 'na', 'nos', 'nas',
+  'com', 'em', 'e', 'ou', 'que', 'tem', 'quero', 'preciso', 'precisamos', 'necessito', 'gostaria', 'queria', 'achar', 'buscar', 'busca', 'encontrar', 'pedir', 'pedido',
+  'codigo', 'código', 'produto', 'numero', 'número', 'item', 'ref', 'referencia', 'referência', 'nº', 'nr', 'cód',
+]);
+
+/** Padrão de código de produto: alfanumérico com opcional . - _ (ex.: VD-001, CEN.01.12, AGR.8013.103) */
+const PADRAO_CODIGO = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * Elimina ruído e identifica um candidato a código na mensagem.
+ * Retorna o termo que parece código para primeira pesquisa em Produtos.Codigo, ou null.
+ */
+function extractCodigoCandidato(mensagem: string): string | null {
+  const t = (mensagem || '').trim();
+  if (!t || t.length < 2) return null;
+  const tokens = t.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+  const candidatos = tokens.filter(
+    (s) => s.length >= 2 && PADRAO_CODIGO.test(s) && !RUIDO_CODIGO.has(s.toLowerCase())
+  );
+  if (candidatos.length === 0) return null;
+  if (candidatos.length === 1) return candidatos[0];
+  const comSeparador = candidatos.filter((s) => /[._-]/.test(s));
+  if (comSeparador.length > 0) return comSeparador.sort((a, b) => b.length - a.length)[0];
+  return candidatos.sort((a, b) => b.length - a.length)[0];
+}
+
 export async function gerarRespostaChat(
   mensagem: string,
   historico: { role: 'user' | 'model'; parts: { text: string }[] }[],
@@ -63,18 +134,19 @@ export async function gerarRespostaChat(
   ultimaMensagemEraOpcoesArquivo?: boolean,
   idEmitente: string = ''
 ): Promise<ChatResponse> {
-  const apiKey = process.env.GROQ_API_KEY?.trim();
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) {
     return {
-      text: 'Erro: GROQ_API_KEY não configurada. Configure no .env.local.',
+      text: 'Erro: OPENROUTER_API_KEY não configurada. Configure no .env.local.',
     };
   }
+  const model = process.env.OPENROUTER_MODEL?.trim() || OPENROUTER_MODEL_DEFAULT;
 
   const jaRespondeuNaConversa = historico.some((h) => h.role === 'model');
   if (!jaRespondeuNaConversa) {
     return {
-      text: 'Olá, eu sou o Fluydo.IA, assistente virtual de vendas.',
-      textoPergunta: 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido',
+      text: 'Olá, eu sou o Fluydo, assistente virtual de vendas.',
+      textoPergunta: TEXTO_INICIAL_CONVERSA,
     };
   }
 
@@ -88,7 +160,7 @@ export async function gerarRespostaChat(
   const voltarAoMenu = /voltar\s*ao\s*menu|^menu$|^voltar$/i.test(msgTrimInicio);
   if (voltarAoMenu) {
     return {
-      text: 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido',
+      text: TEXTO_INICIAL_CONVERSA,
       cart: cart.length > 0 ? cart : undefined,
     };
   }
@@ -102,33 +174,34 @@ export async function gerarRespostaChat(
       text: 'Segue seu pedido:',
       cart,
       exibirCarrinho: true,
-      textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
     };
   }
 
   const finalizarPedido = /^finalizar(\s*pedido)?$/i.test(msgTrimInicio);
   if (finalizarPedido) {
     if (cart.length === 0) {
-      return { text: 'Não há pedido pendente.', textoPergunta: 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido', cart };
+      return { text: 'Não há pedido pendente.', textoPergunta: TEXTO_INICIAL_CONVERSA, cart };
     }
     return {
       text: 'Segue seu pedido para conferência:',
       cart,
       exibirCarrinho: true,
-      textoPergunta: 'Está correto?\n1 - Alterar o pedido\n2 - Está correto, finalizar (informe CPF ou CNPJ)',
+      textoPergunta:
+        'Está correto? Se quiser mudar algo, digite "alterar pedido". Se estiver tudo certo, digite "finalizar pedido" e informe o CPF ou CNPJ.',
     };
   }
 
   const fecharPedido = /^fechar(\s*pedido)?$/i.test(msgTrimInicio);
   if (fecharPedido) {
     if (cart.length === 0) {
-      return { text: 'Não há itens no pedido. Deseja procurar produtos?', textoPergunta: 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido', cart };
+      return { text: 'Não há itens no pedido. Deseja procurar produtos?', textoPergunta: TEXTO_INICIAL_CONVERSA, cart };
     }
     return {
       text: 'Segue seu pedido para conferência:',
       cart,
       exibirCarrinho: true,
-      textoPergunta: 'Está correto?\n1 - Alterar o pedido\n2 - Está correto, finalizar (informe CPF ou CNPJ)',
+      textoPergunta:
+        'Está correto? Se quiser mudar algo, digite "alterar pedido". Se estiver tudo certo, digite "finalizar pedido" e informe o CPF ou CNPJ.',
     };
   }
 
@@ -139,18 +212,73 @@ export async function gerarRespostaChat(
     }
     return {
       text: 'Excluir o pedido completo?',
-      textoPergunta: '1 - Não\n2 - Sim',
+      textoPergunta: 'Responda "sim" para excluir tudo ou "não" para manter o pedido.',
       cart,
     };
   }
 
-  const ajudaOuInterrogacao = msgTrimInicio === '?' || /^ajuda$/i.test(msgTrimInicio);
-  if (ajudaOuInterrogacao) {
+  const baixarPdf = /^baixar\s*pdf$|^pdf$/i.test(msgTrimInicio);
+  if (baixarPdf) {
     return {
-      text: 'A qualquer momento você pode usar as palavras reservadas',
-      textoPergunta: '1 - Menu - (volta para o Menu principal)\n2 - Pedido - (Mostra o pedido que está pendente)\n3 - Excluir - (Exclui totalmente o pedido que está pendente)\n4 - Finalizar - (Finaliza o pedido que está pendente)\n5 - ? - (mostra a lista de palavras reservadas)',
+      text: 'Gerando o PDF da última tabela de resultados.',
+      downloadPdf: true,
       cart: cart.length > 0 ? cart : undefined,
     };
+  }
+
+  // Pedido explícito de ajuda: usa tabelas FluydoAjuda / FluydoAjudaGatilhos
+  if (msgTrimInicio === '?' || isExplicitHelpRequest(mensagem)) {
+    if (hasDatabase()) {
+      try {
+        const sugestoes = await getHelpSuggestions(mensagem);
+        if (sugestoes.length > 0) {
+          const top = sugestoes[0];
+          const artigo = await getHelpBySlug(top.slug);
+          if (artigo) {
+            return {
+              text: artigo.titulo,
+              artigoAjuda: artigo,
+              artigosAjuda: sugestoes,
+              cart: cart.length > 0 ? cart : undefined,
+            };
+          }
+        }
+        const artigos = await listHelpArticles();
+        if (artigos.length > 0) {
+          const lista = artigos.map((a) => `• ${a.titulo} (slug: ${a.slug})`).join('\n');
+          return {
+            text: 'Tópicos de ajuda disponíveis:',
+            textoPergunta: `${lista}\n\nDigite o slug do tópico que deseja ver (ex.: ${artigos[0]?.slug ?? 'ajuda'}).`,
+            artigosAjuda: artigos,
+            cart: cart.length > 0 ? cart : undefined,
+          };
+        }
+      } catch (err) {
+        console.warn('[groq] Erro ao buscar ajuda:', err);
+      }
+    }
+    const msgAjuda = await getConfig(CONFIG_KEYS.MSG_COMANDO_AJUDA);
+    return {
+      text: msgAjuda ?? 'Ainda não há artigos de ajuda cadastrados. Digite o produto ou código que deseja pesquisar.',
+      cart: cart.length > 0 ? cart : undefined,
+    };
+  }
+
+  // Pedido de artigo por slug (ex.: "ajuda:buscar" ou "ver ajuda buscar")
+  const slugMatch = msgTrimInicio.match(/^(?:ajuda\s*:?\s*|ver\s+ajuda\s+)(\w[\w-]*)$/i);
+  if (slugMatch && hasDatabase()) {
+    try {
+      const artigo = await getHelpBySlug(slugMatch[1].trim());
+      if (artigo) {
+        return {
+          text: artigo.titulo,
+          artigoAjuda: artigo,
+          cart: cart.length > 0 ? cart : undefined,
+        };
+      }
+    } catch (err) {
+      console.warn('[groq] Erro ao buscar artigo por slug:', err);
+    }
   }
 
   // A qualquer momento: mensagem terminada em ? → pesquisa (busca web + LLM), sem validar o que estava aguardando
@@ -172,14 +300,14 @@ export async function gerarRespostaChat(
       })),
       { role: 'user', content: mensagem },
     ];
-    const resPergunta = await fetch(GROQ_URL, {
+    const resPergunta = await fetch(OPENROUTER_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: GROQ_MODEL,
+        model,
         messages: messagesPergunta,
         temperature: 0.7,
         max_tokens: 1024,
@@ -211,7 +339,7 @@ export async function gerarRespostaChat(
     /2\s*-\s*Enviar um arquivo com pedido/i.test(ultimaRespostaAssistenteInicio);
   if (ehMenuPrincipal && msgTrimInicio === '1') {
     return {
-      text: 'Você pode pesquisar produtos por código, descrição ou medidas. Mas se quiser fazer uma pergunta específica, como por exemplo, como funciona uma vedação? use sempre o sinal de interrogação no final da frase.',
+      text: 'Você pode pesquisar por código, descrição ou medidas. Use "medida" ou "com medida" seguido dos números para filtrar só por dimensões (ex.: retentor medida 130). Use "linha" + letras para filtrar por início do código (ex.: linha VD). Para perguntas gerais, termine com ?',
       textoPergunta: 'Qual é o produto que devo procurar?',
       cart: cart.length > 0 ? cart : undefined,
     };
@@ -302,6 +430,19 @@ export async function gerarRespostaChat(
   const opcoesInsuficiente = /estoque é insuficiente|1\s*-\s*Manter a quantidade|2\s*-\s*Alterar a quantidade/i;
   const ultimaPerguntaQtd = /qual é a quantidade\?/i.test(ultimaRespostaAssistente);
 
+  function encontrarUltimaMensagemComMedidas(): string | null {
+    for (let i = historico.length - 1; i >= 0; i--) {
+      if (historico[i].role !== 'user') continue;
+      const text = historico[i].parts.map((p) => p.text).join(' ').trim();
+      if (!text || text.includes('?')) continue;
+      // Tem números e algum indicativo de medida/produto técnico
+      if (/\d/.test(text) && /(x|×|medida|oring|o-ring|retentor|anel|gaxeta|junta)/i.test(text)) {
+        return text;
+      }
+    }
+    return null;
+  }
+
   function obterUltimoItemQtdDoHistorico(): { itemNum: number; qtd: number } | null {
     for (let i = historico.length - 1; i >= 0; i--) {
       if (historico[i].role !== 'user') continue;
@@ -326,7 +467,66 @@ export async function gerarRespostaChat(
       text: 'Segue seu pedido:',
       cart: cartAtual,
       exibirCarrinho: true,
-      textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
+      textoPergunta:
+        'Você pode digitar "alterar pedido" para mudar algum item, "incluir outro item" para adicionar mais produtos, "buscar produto" para pesquisar de novo ou "finalizar pedido" para concluir.',
+    };
+  }
+
+  // Comando de tolerância: ex. "5% de tolerância", "10% pra mais", "±3%"
+  const toleranceCmd = parseToleranceCommand(mensagem);
+  if (toleranceCmd && hasDatabase() && idEmitente.trim()) {
+    const lastSearchText = encontrarUltimaMensagemComMedidas();
+    if (!lastSearchText) {
+      return {
+        text: 'Consigo sim aplicar tolerância nas medidas. Só me diga primeiro a medida que você quer procurar (ex.: 140x60).',
+        cart: cartAtual.length > 0 ? cartAtual : undefined,
+      };
+    }
+
+    const planBase = intelligentSearchEngine(lastSearchText, { preferSearchOverClarify: true });
+    const dims = planBase.dims;
+    const hasAnyDim = dims.dim1 != null || dims.dim2 != null || dims.dim3 != null || dims.dim4 != null;
+    if (!hasAnyDim) {
+      return {
+        text: 'Para eu aplicar tolerância, preciso primeiro das medidas (ex.: 140x60 ou 110x130x13).',
+        cart: cartAtual.length > 0 ? cartAtual : undefined,
+      };
+    }
+
+    const structured = {
+      mode: 'TOLERANCE' as const,
+      dim1: dims.dim1 ?? null,
+      dim2: dims.dim2 ?? null,
+      dim3: dims.dim3 ?? null,
+      dim4: dims.dim4 ?? null,
+      tolerancePercent: toleranceCmd.percent / 100,
+      direction: toleranceCmd.mode,
+    };
+
+    const resultadosTol = await buscarProdutosPrisma(lastSearchText, idEmitente.trim(), { structuredDimFilter: structured });
+
+    const fraseModo =
+      toleranceCmd.mode === 'PLUS_ONLY'
+        ? `até ${toleranceCmd.percent}% pra mais`
+        : toleranceCmd.mode === 'MINUS_ONLY'
+        ? `até ${toleranceCmd.percent}% pra menos`
+        : `${toleranceCmd.percent}% de tolerância`;
+
+    if (resultadosTol.length === 0) {
+      return {
+        text: `Refiz a busca com ${fraseModo}, mas não encontrei nenhuma opção no estoque. Se quiser, podemos tentar outra medida ou ajustar a tolerância.`,
+        cart: cartAtual.length > 0 ? cartAtual : undefined,
+      };
+    }
+
+    const ordenadosTol = resultadosTol
+      .map((p) => mapBuscaToChatProduto(p) as unknown as Produto)
+      .sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
+
+    return {
+      text: `Beleza — refiz a busca com ${fraseModo} e encontrei ${ordenadosTol.length} produto(s). Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar os produtos ao pedido.`,
+      produtos: ordenadosTol,
+      cart: cartAtual.length > 0 ? cartAtual : undefined,
     };
   }
 
@@ -335,7 +535,8 @@ export async function gerarRespostaChat(
   if (matchListarOrdenar && lastProducts && lastProducts.length > 0) {
     const resto = matchListarOrdenar[1].trim().toLowerCase().normalize('NFD').replace(/\u0300-\u036f/g, '');
     const tokens = resto.split(/\s+(?:e\s+)?|\s*,\s*/).map((t) => t.trim()).filter(Boolean);
-    const colunasMap: Record<string, keyof Produto | 'precoUnitario'> = {
+    type KeyProdutoOrdenar = keyof Produto | 'precoUnitario' | 'dim1' | 'dim2' | 'dim3' | 'dim4' | 'material';
+    const colunasMap: Record<string, KeyProdutoOrdenar> = {
       codigo: 'codigo',
       descricao: 'descricao',
       dim1: 'dim1',
@@ -362,12 +563,11 @@ export async function gerarRespostaChat(
       estoque: 'estoque',
       material: 'material',
     };
-    type KeyProduto = keyof Produto | 'precoUnitario';
-    const keys: KeyProduto[] = [];
+    const keys: KeyProdutoOrdenar[] = [];
     const labels: string[] = [];
     for (const t of tokens) {
       const dimMatch = t.match(/^dim\s*([1-4])$/);
-      const k: KeyProduto | null = colunasMap[t] ?? (dimMatch ? (`dim${dimMatch[1]}` as KeyProduto) : null);
+      const k: KeyProdutoOrdenar | null = colunasMap[t] ?? (dimMatch ? (`dim${dimMatch[1]}` as KeyProdutoOrdenar) : null);
       if (k && !keys.includes(k)) {
         keys.push(k);
         labels.push(labelParaKey[k] ?? k);
@@ -376,8 +576,8 @@ export async function gerarRespostaChat(
     if (keys.length > 0) {
       const sorted = [...lastProducts].sort((a, b) => {
         for (const key of keys) {
-          const va = (a as Record<string, unknown>)[key];
-          const vb = (b as Record<string, unknown>)[key];
+          const va = (a as unknown as Record<string, unknown>)[key];
+          const vb = (b as unknown as Record<string, unknown>)[key];
           if (typeof va === 'string' && typeof vb === 'string') {
             const c = va.localeCompare(vb, undefined, { numeric: true });
             if (c !== 0) return c;
@@ -393,8 +593,7 @@ export async function gerarRespostaChat(
       });
       const labelTexto = labels.join(', ');
       return {
-        text: `${sorted.length} Produtos ordenados por ${labelTexto}.`,
-        textoPergunta: '1 - Incluir produto no pedido\n2 - Procurar por outro produto',
+        text: `${sorted.length} Produtos ordenados por ${labelTexto}. Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar os produtos ao pedido.`,
         produtos: sorted,
         cart: cartAtual.length > 0 ? cartAtual : undefined,
       };
@@ -416,18 +615,21 @@ export async function gerarRespostaChat(
           text: 'Segue seu pedido:',
           cart: cartAtual,
           exibirCarrinho: true,
-          textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
+          textoPergunta:
+            'Você pode digitar "alterar pedido" para mudar algum item, "incluir outro item" para adicionar mais produtos, "buscar produto" para pesquisar de novo ou "finalizar pedido" para concluir.',
         };
       }
       return {
         text: `Produto com índice ${itemIdx + 1} não encontrado no pedido. Por favor, verifique e tente novamente.`,
-        textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
+        textoPergunta:
+          'Você pode digitar "alterar pedido" para mudar algum item, "incluir outro item" para adicionar mais produtos, "buscar produto" para pesquisar de novo ou "finalizar pedido" para concluir.',
         cart: cartAtual,
       };
     }
     return {
       text: 'Formato inválido. Por favor, indique o número do item e a nova quantidade (ex: 1 15 ou 1,15).',
-      textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
+      textoPergunta:
+        'Você pode digitar "alterar pedido" para mudar algum item, "incluir outro item" para adicionar mais produtos, "buscar produto" para pesquisar de novo ou "finalizar pedido" para concluir.',
       cart: cartAtual,
     };
   }
@@ -442,18 +644,21 @@ export async function gerarRespostaChat(
           text: 'Segue seu pedido:',
           cart: cartAtual,
           exibirCarrinho: true,
-          textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
+          textoPergunta:
+            'Você pode digitar "alterar pedido" para mudar algum item, "incluir outro item" para adicionar mais produtos, "buscar produto" para pesquisar de novo ou "finalizar pedido" para concluir.',
         };
       }
       return {
         text: `Produto com índice ${itemIdx + 1} não encontrado no pedido. Por favor, verifique e tente novamente.`,
-        textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
+        textoPergunta:
+          'Você pode digitar "alterar pedido" para mudar algum item, "incluir outro item" para adicionar mais produtos, "buscar produto" para pesquisar de novo ou "finalizar pedido" para concluir.',
         cart: cartAtual,
       };
     }
     return {
       text: 'Formato inválido. Indique o número do item a excluir (ex: 1).',
-      textoPergunta: '1 - Alterar o Pedido\n2 - Incluir outro item\n3 - Procurar por outro produto',
+      textoPergunta:
+        'Você pode digitar "alterar pedido" para mudar algum item, "incluir outro item" para adicionar mais produtos, "buscar produto" para pesquisar de novo ou "finalizar pedido" para concluir.',
       cart: cartAtual,
     };
   }
@@ -512,7 +717,7 @@ export async function gerarRespostaChat(
     }
   }
 
-  if (historico.length >= 2 && (msgTrim === '1' || msgTrim === '2' || msgTrim === '3')) {
+  if (historico.length >= 2 && (msgTrim === '1' || msgTrim === '2' || msgTrim === '3' || msgTrim === '4')) {
     const pediuDesejaExcluirDesdePendente =
       algumaRespostaTemDesejaExcluir &&
       /1\s*-\s*Não/i.test(ultimaRespostaAssistente) &&
@@ -523,7 +728,7 @@ export async function gerarRespostaChat(
       if (msgTrim === '2')
         return {
           text: 'Pedido totalmente excluído.',
-          textoPergunta: 'O que você deseja?\n1 - Procurar por produtos\n2 - Enviar um arquivo com pedido',
+          textoPergunta: TEXTO_INICIAL_CONVERSA,
           cart: [],
           clearCart: true,
         };
@@ -553,7 +758,7 @@ export async function gerarRespostaChat(
           text: 'Segue seu pedido para conferência:',
           cart: cartAtual,
           exibirCarrinho: true,
-          textoPergunta: 'Está correto?\n1 - Alterar o pedido\n2 - Está correto, finalizar (informe CPF ou CNPJ)',
+          textoPergunta: 'Está correto? Você pode digitar "alterar pedido" para mudar algo ou "finalizar pedido" para concluir (informe CPF ou CNPJ).',
         };
       if (msgTrim === '2')
         return {
@@ -561,33 +766,11 @@ export async function gerarRespostaChat(
           cart: cartAtual,
           exibirCarrinho: true,
           carrinhoEmBalaoSeparado: true,
-          textoPergunta: '1 - Não\n2 - Sim',
+          textoPergunta: 'Responda "sim" para excluir tudo ou "não" para manter o pedido.',
         };
     }
 
-    const opcoesAposProdutos =
-      (/\b1\s*-\s*.*(incluir produto no pedido|indicar o produto escolhido|qual produto|produto deseja)/i.test(ultimaRespostaAssistente) ||
-       /Produtos encontrados/i.test(ultimaRespostaAssistente)) &&
-      /\b2\s*-\s*.*(procurar por outro|pesquisar|outro produto)/i.test(ultimaRespostaAssistente);
-    if (opcoesAposProdutos) {
-      if (msgTrim === '1')
-        return { text: 'Indique o número do item e a quantidade. (ex.: 1 15)', cart: cartAtual.length > 0 ? cartAtual : undefined };
-      if (msgTrim === '2')
-        return { text: 'Qual é o produto que devo procurar?', cart: cartAtual.length > 0 ? cartAtual : undefined };
-    }
-    const opcoesAposPedido =
-      /1\s*-\s*Alterar o Pedido/i.test(ultimaRespostaAssistente) &&
-      /2\s*-\s*Incluir outro item/i.test(ultimaRespostaAssistente) &&
-      /3\s*-\s*Procurar por outro produto/i.test(ultimaRespostaAssistente);
-    if (msgTrim === '2' && opcoesAposPedido)
-      return { text: 'Indique o número do item e a quantidade. (ex.: 1 15)', cart: cartAtual.length > 0 ? cartAtual : undefined };
-    if (msgTrim === '3' && opcoesAposPedido)
-      return { text: 'Qual é o produto que devo procurar?', cart: cartAtual.length > 0 ? cartAtual : undefined };
-    if (msgTrim === '1' && opcoesAposPedido && cartAtual.length > 0)
-      return {
-        text: '1 - Alterar quantidade\n2 - Excluir produto',
-        cart: cartAtual,
-      };
+    // Menus numéricos após produtos/pedido foram descontinuados; a interação passa a ser por frases naturais
 
     const opcoesAlterarExcluir =
       /1\s*-\s*Alterar quantidade/i.test(ultimaRespostaAssistente) &&
@@ -598,20 +781,99 @@ export async function gerarRespostaChat(
       return { text: 'Qual item deseja excluir?', textoPergunta: 'Indique o produto para excluir (ex: 1)', cart: cartAtual.length > 0 ? cartAtual : undefined };
   }
 
-  const ultimaTinhaOpcoes1e2 =
-    historico.length >= 2 &&
-    /\b1\s*-\s*/.test(ultimaRespostaAssistente) &&
-    /\b2\s*-\s*/.test(ultimaRespostaAssistente);
-  const ultimaTinhaOpcao3 = /3\s*-\s*Procurar por outro produto/i.test(ultimaRespostaAssistente);
-  const opcaoInvalida = msgTrim !== '1' && msgTrim !== '2' && (msgTrim !== '3' || !ultimaTinhaOpcao3);
-  if (ultimaTinhaOpcoes1e2 && opcaoInvalida) {
-    const idxOpcoes = ultimaRespostaAssistente.search(/\n?\s*1\s*-\s*/i);
-    const opcoesNovamente = idxOpcoes >= 0 ? ultimaRespostaAssistente.slice(idxOpcoes).trim() : ultimaRespostaAssistente;
+  // Menus numéricos genéricos (1/2/3/4) não são mais usados; qualquer texto do cliente deve ser interpretado de forma natural.
+
+  // ----- Fluxo 4 - Finalizar: CPF/CNPJ → (CNPJ: confirmar dados | CPF: CEP → confirmar endereço) → Faturamento -----
+  const pediuCpfCnpj =
+    /Informe o CPF ou CNPJ do cliente/i.test(ultimaRespostaAssistente) ||
+    /Informe o CNPJ novamente/i.test(ultimaRespostaAssistente);
+  if (pediuCpfCnpj && cartAtual.length > 0) {
+    const n = msgTrim.replace(/\D/g, '');
+    if (n.length === 14) {
+      const cliente = await buscarClientePorCpfCnpj(msgTrim);
+      if (cliente) {
+        return {
+          text: `Cliente: ${cliente.nome}.`,
+          textoPergunta: 'Confirma os dados do cliente? 1 - Sim, 2 - Não',
+          cart: cartAtual,
+        };
+      }
+      return {
+        text: 'CNPJ não encontrado.',
+        textoPergunta: 'Informe o CNPJ novamente.',
+        cart: cartAtual,
+      };
+    }
+    if (n.length === 11) {
+      return {
+        text: 'Para concluir o pedido, precisamos do endereço de entrega.',
+        textoPergunta: 'Informe o CEP do endereço de entrega.',
+        cart: cartAtual,
+      };
+    }
     return {
-      text: 'Não é uma opção válida. Por favor, escolha novamente.',
-      textoPergunta: opcoesNovamente,
-      cart: cartAtual.length > 0 ? cartAtual : undefined,
+      text: 'Informe um CPF (11 dígitos) ou CNPJ (14 dígitos) válido.',
+      textoPergunta: 'Informe o CPF ou CNPJ do cliente.',
+      cart: cartAtual,
     };
+  }
+
+  const pediuConfirmarDadosCliente = /Confirma os dados do cliente\?\s*1\s*-\s*Sim/i.test(ultimaRespostaAssistente);
+  if (pediuConfirmarDadosCliente && cartAtual.length > 0) {
+    if (msgTrim === '2') {
+      return {
+        text: 'Informe o CNPJ novamente.',
+        textoPergunta: 'Informe o CPF ou CNPJ do cliente.',
+        cart: cartAtual,
+      };
+    }
+    if (msgTrim === '1') {
+      const itensPagamentos = await listarPagamentos(idEmitente);
+      return {
+        text: formatarOpcoesPagamentos(itensPagamentos),
+        cart: cartAtual,
+        clearCart: true,
+      };
+    }
+  }
+
+  const pediuCep =
+    /Informe o CEP do endereço de entrega/i.test(ultimaRespostaAssistente) ||
+    /Informe o CEP novamente/i.test(ultimaRespostaAssistente);
+  if (pediuCep && cartAtual.length > 0) {
+    const endereco = await buscarEnderecoPorCep(msgTrim);
+    if (endereco) {
+      const enderecoFormatado = formatarEnderecoParaChat(endereco);
+      return {
+        text: `Endereço: ${enderecoFormatado}.`,
+        textoPergunta: 'Confirma o endereço? 1 - Sim, 2 - Não',
+        cart: cartAtual,
+      };
+    }
+    return {
+      text: 'CEP não encontrado.',
+      textoPergunta: 'Informe o CEP novamente.',
+      cart: cartAtual,
+    };
+  }
+
+  const pediuConfirmarEndereco = /Confirma o endereço\?\s*1\s*-\s*Sim/i.test(ultimaRespostaAssistente);
+  if (pediuConfirmarEndereco && cartAtual.length > 0) {
+    if (msgTrim === '2') {
+      return {
+        text: 'Informe o CEP novamente.',
+        textoPergunta: 'Informe o CEP do endereço de entrega.',
+        cart: cartAtual,
+      };
+    }
+    if (msgTrim === '1') {
+      const itensPagamentos = await listarPagamentos(idEmitente);
+      return {
+        text: formatarOpcoesPagamentos(itensPagamentos),
+        cart: cartAtual,
+        clearCart: true,
+      };
+    }
   }
 
   if (parecePedidoDeProduto) {
@@ -619,20 +881,274 @@ export async function gerarRespostaChat(
     if (termo === '1' || termo === '2') {
       // não fazer busca por "1" ou "2"
     } else {
+      // Filtro de intercorrência social: saudação, cortesia, gratidão → resposta social (sem busca)
+      const socialResp = checkSocialTrigger(mensagem);
+      if (socialResp) {
+        return {
+          ...socialResp,
+          cart: cartAtual.length > 0 ? cartAtual : undefined,
+        };
+      }
       let produtosEncontrados: Produto[];
 
       if (hasDatabase() && idEmitente.trim()) {
         try {
-          const resultados = await buscarProdutosPrisma(mensagem, idEmitente.trim());
+          const textoNorm = mensagem.replace(/,/g, '.').trim();
+          const tokensBrutos = textoNorm
+            .split(/\s+/)
+            .map((t) => t.trim())
+            .filter((t) => t.length > 0);
+          const saudacoesSimples = new Set(['oi', 'olá', 'ola']);
+          const tokensFiltrados: string[] = [];
+          for (let i = 0; i < tokensBrutos.length; i += 1) {
+            const atual = tokensBrutos[i];
+            const prox = tokensBrutos[i + 1];
+            const atualLower = atual.toLowerCase();
+            const proxLower = prox?.toLowerCase();
+            // Combos "bom dia", "boa tarde", "boa noite"
+            if (
+              (atualLower === 'bom' && proxLower === 'dia') ||
+              (atualLower === 'boa' && (proxLower === 'tarde' || proxLower === 'noite'))
+            ) {
+              i += 1;
+              continue;
+            }
+            if (saudacoesSimples.has(atualLower)) continue;
+            tokensFiltrados.push(atual);
+          }
+
+          const termCount = tokensFiltrados.length;
+
+          // Heurística: mensagem é apenas um código técnico (sem espaços)?
+          const pareceCodigoProduto = termCount === 1
+            ? /^[A-Za-z0-9._-]+$/i.test(tokensFiltrados[0]) && tokensFiltrados[0].length >= 2
+            : /^[A-Za-z0-9._-]+$/i.test(mensagem.trim()) && mensagem.trim().length >= 2 && !/\s/.test(mensagem.trim());
+
+          // (2) Pesquisa por código (isolado): quando o termo único parece código.
+          if (termCount === 1 && pareceCodigoProduto) {
+            const codigoTerm = tokensFiltrados[0];
+            const porCodigoPrimeiro = await buscarProdutosPorCodigo(codigoTerm, idEmitente.trim());
+            if (porCodigoPrimeiro.length > 0) {
+              const msgCodigo = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_CODIGO);
+              const produtosCodigo = porCodigoPrimeiro
+                .map((p) => mapBuscaToChatProduto(p) as unknown as Produto)
+                .sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
+              return {
+                text: msgCodigo ?? 'Produto(s) encontrado(s). Informe as quantidades e digite "pedir" para adicionar ao pedido.',
+                produtos: produtosCodigo,
+                cart: cartAtual.length > 0 ? cartAtual : undefined,
+              };
+            }
+          }
+
+          // Regra termo único: se sobrar apenas um termo, e não for código nem linha, pedir para montar melhor a pesquisa.
+          if (termCount === 1) {
+            const msgPedir = await getConfig(CONFIG_KEYS.MSG_PEDIR_ESPECIFICACOES);
+            return {
+              text: msgPedir ?? 'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" antes das dimensões (ex.: medida 140 170), "perf" antes do perfil (ex.: perf BAG) e "mat" antes do material ou dureza (ex.: mat NBR70). Você pode combinar com o nome do produto, por exemplo: retentor medida 140 170 perf BAG mat NBR70.',
+              cart: cartAtual.length > 0 ? cartAtual : undefined,
+            };
+          }
+
+          // Regra 2–3 termos: se houver número no 2º ou 3º termo sem rótulo (medida/perf/mat/d1/dim1...), pedir para o usuário rotular.
+          if (termCount >= 2 && termCount <= 3) {
+            const hasNumeroNo23 = tokensFiltrados.slice(1, 3).some((t) => /^\d+([.,]\d+)?$/.test(t.replace(',', '.')));
+            const temRotulo =
+              /\b(d1|d2|d3|d4|dim1|dim2|dim3|dim4|medida|perf|mat)\b/i.test(mensagem);
+            if (hasNumeroNo23 && !temRotulo) {
+              const msgPedir = await getConfig(CONFIG_KEYS.MSG_PEDIR_ESPECIFICACOES);
+              return {
+                text: msgPedir ?? 'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" antes das dimensões (ex.: medida 140 170), "perf" antes do perfil (ex.: perf BAG) e "mat" antes do material ou dureza (ex.: mat NBR70). Você pode combinar com o nome do produto, por exemplo: retentor medida 140 170 perf BAG mat NBR70.',
+                cart: cartAtual.length > 0 ? cartAtual : undefined,
+              };
+            }
+          }
+
+          // (2) Pesquisa por código (isolado): somente quando a mensagem inteira é um código (sem espaços).
+          // Não usar esse caminho quando houver também descrição (ex.: "anel 2010", "retentor BAG").
+          const codigoCandidato = extractCodigoCandidato(mensagem);
+          if (!mensagem.includes(' ') && pareceCodigoProduto && codigoCandidato) {
+            const porCodigoPrimeiro = await buscarProdutosPorCodigo(codigoCandidato, idEmitente.trim());
+            if (porCodigoPrimeiro.length > 0) {
+              const msgCodigo = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_CODIGO);
+              const produtosCodigo = porCodigoPrimeiro
+                .map((p) => mapBuscaToChatProduto(p) as unknown as Produto)
+                .sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
+              return {
+                text: msgCodigo ?? 'Produto(s) encontrado(s). Informe as quantidades e digite "pedir" para adicionar ao pedido.',
+                produtos: produtosCodigo,
+                cart: cartAtual.length > 0 ? cartAtual : undefined,
+              };
+            }
+          }
+
+          // Cascata quando busca direta por código não achou: retirada do ruído + (1) produto + parte do código, (2) produto + dimensões, (3) produto + palavra relevante/perfil/material.
+          const plan = intelligentSearchEngine(mensagem, { preferSearchOverClarify: true });
+          const temDims = plan.dims.dim1 != null || plan.dims.dim2 != null || plan.dims.dim3 != null || plan.dims.dim4 != null;
+          const structured =
+            temDims
+              ? {
+                  mode: (plan.queryMode === 'STRICT' ? 'STRICT' : 'TOLERANCE') as 'STRICT' | 'TOLERANCE',
+                  dim1: plan.dims.dim1 ?? null,
+                  dim2: plan.dims.dim2 ?? null,
+                  dim3: plan.dims.dim3 ?? null,
+                  dim4: plan.dims.dim4 ?? null,
+                  toleranceMm: plan.queryMode === 'STRICT' ? undefined : 0.2,
+                }
+              : undefined;
+          let termoBusca = mensagem;
+          let vocabTerms: string[] = [];
+          let materialDureza: string | null = null;
+          let perfilStr = '';
+          let numerosStr = '';
+          const stopWords = new Set(['de', 'da', 'do', 'das', 'dos', 'para', 'pra', 'por', 'um', 'uma', 'uns', 'umas', 'com', 'no', 'na', 'nos', 'nas', 'ao', 'aos', 'à', 'às', 'em', 'e', 'ou', 'que', 'o', 'a', 'os', 'as', 'preciso', 'precisamos', 'quero', 'queremos', 'necessito', 'gostaria', 'queria', 'precisa', 'tem', 'tenho', 'achar', 'acho', 'procurando', 'buscar', 'busca', 'encontrar', 'encontre', 'mandar', 'enviar', 'pedir', 'pedido', 'cotar', 'cotação', 'orçar', 'orcamento']);
+          try {
+            vocabTerms = await getVocabularySearchTerms(mensagem);
+            materialDureza = parseMaterialDureza(mensagem);
+            const numeros = parseMeasures(mensagem).numbers;
+            numerosStr = numeros.length > 0 ? ' ' + numeros.join(' ') : '';
+            const materialDurezaStr = materialDureza ? ' ' + materialDureza : '';
+            const perfilMatch = mensagem.match(/\b(BR|BA|BS|AS|V|VB)\b/gi);
+            perfilStr = perfilMatch && perfilMatch.length > 0 ? ' ' + [...new Set(perfilMatch)].join(' ') : '';
+            const tokensMsg = mensagem.split(/[\s.\-_/\\]+/).map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 2 && !/^\d+([.,]\d+)?$/.test(t.replace(',', '.')) && !stopWords.has(t));
+            const todasPalavras = [...new Set([...vocabTerms, ...tokensMsg])];
+            termoBusca = (todasPalavras.join(' ') + (materialDureza ? ' ' + materialDureza : '') + perfilStr + numerosStr).trim() || mensagem;
+
+            const formatarRetornoCascata = async (resultados: Awaited<ReturnType<typeof buscarProdutosPrisma>>) => {
+              if (resultados.length === 0) return null;
+              const produtosMap = resultados.map((p) => mapBuscaToChatProduto(p) as unknown as Produto).sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
+              const msg = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_DESCRICAO);
+              const texto = (msg ?? 'Encontrei {n} produto(s). Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar ao pedido.').replace(/\{n\}/g, String(produtosMap.length));
+              return { text: texto, produtos: produtosMap, cart: cartAtual.length > 0 ? cartAtual : undefined };
+            };
+
+            // (1) Produto + parte do código: descrição (vocabulário ou tokens da mensagem) + código candidato
+            const palavrasProdutoParaCodigo = vocabTerms.length > 0 ? vocabTerms.join(' ') : tokensMsg.join(' ').trim();
+            if (codigoCandidato && palavrasProdutoParaCodigo) {
+              const termoProdutoCodigo = (palavrasProdutoParaCodigo + ' ' + codigoCandidato).trim();
+              const r1 = await buscarProdutosPrisma(termoProdutoCodigo, idEmitente.trim());
+              const out1 = await formatarRetornoCascata(r1);
+              if (out1) return out1;
+            }
+
+            // (2) Produto + dimensões
+            if (temDims && structured && (vocabTerms.length > 0 || materialDureza || perfilStr.trim())) {
+              const termoProdutoDims = (vocabTerms.join(' ') + (materialDureza ? ' ' + materialDureza : '') + perfilStr).trim();
+              const r2 = await buscarProdutosPrisma(termoProdutoDims || mensagem, idEmitente.trim(), { structuredDimFilter: structured });
+              const out2 = await formatarRetornoCascata(r2);
+              if (out2) return out2;
+            }
+
+            // (3) Produto + palavra relevante ou perfil ou material (inclui números para ex.: anel 2010)
+            if (todasPalavras.length > 0 || materialDureza || perfilStr.trim() || numerosStr.trim()) {
+              const termoProdutoPalavra = (todasPalavras.join(' ') + (materialDureza ? ' ' + materialDureza : '') + perfilStr + numerosStr).trim();
+              if (termoProdutoPalavra) {
+                const r3 = await buscarProdutosPrisma(termoProdutoPalavra, idEmitente.trim());
+                const out3 = await formatarRetornoCascata(r3);
+                if (out3) return out3;
+              }
+            }
+          } catch (e) {
+            console.warn('[groq] cascata produto+código/dims/palavra:', e);
+          }
+
+          // Regra Linhas: só quando o usuário disser "linha" (ex.: "linha CXP", "linha case"). "guia de nylon" não é linha.
+          if (/\blinha\b/i.test(mensagem)) {
+            const linhaCandidates = extractLinhaCandidates(mensagem);
+            let linhaMatch: Awaited<ReturnType<typeof findLinhaMatch>> = null;
+            for (const candidate of linhaCandidates) {
+              linhaMatch = await findLinhaMatch(candidate);
+              if (linhaMatch) break;
+            }
+            if (linhaMatch) {
+              if (isLinhaBloqueadaOuExclusiva(linhaMatch)) {
+                const msg = await getConfig(CONFIG_KEYS.MSG_LINHA_INDISPONIVEL);
+                return {
+                  text: msg ?? 'Essa linha de produto é de venda exclusiva, não está disponível.',
+                  textoPergunta: 'Se quiser, pode tentar outra linha ou me dizer o código ou a medida do produto.',
+                  cart: cartAtual.length > 0 ? cartAtual : undefined,
+                };
+              }
+              const porLinha = await searchProductsByLinha(linhaMatch.linha, idEmitente.trim());
+              if (porLinha.length > 0) {
+                const ordenados = [...porLinha]
+                  .map((p) => mapBuscaToChatProduto(p) as unknown as Produto)
+                  .sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
+                const msgSucesso = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_LINHA);
+                let textoLinha = (msgSucesso ?? 'Encontrei {n} produto(s). Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar ao pedido.').replace(/\{n\}/g, String(ordenados.length));
+                if (!/\d+\s*produto/.test(textoLinha)) textoLinha = `Encontrei ${ordenados.length} produto(s). ${textoLinha.trim()}`;
+                return {
+                  text: textoLinha,
+                  produtos: ordenados,
+                  cart: cartAtual.length > 0 ? cartAtual : undefined,
+                };
+              }
+              // Linha permitida mas sem produtos por código: segue para a busca normal (fallback).
+            } else {
+              const msgNaoEncontrada = await getConfig(CONFIG_KEYS.MSG_LINHA_NAO_ENCONTRADA);
+              return {
+                text: msgNaoEncontrada ?? 'A linha procurada não foi encontrada.',
+                cart: cartAtual.length > 0 ? cartAtual : undefined,
+              };
+            }
+          }
+
+          // Refinamento: entrada com só nome do produto (sem dimensões, material/dureza ou perfil) → pedir especificações (não buscar).
+          const temPerfil = /\b(BR|BA|BS|AS|V|VB)\b/i.test(mensagem);
+          if (!pareceCodigoProduto && vocabTerms.length > 0 && !temDims && !materialDureza && !temPerfil) {
+            const msgPedir = await getConfig(CONFIG_KEYS.MSG_PEDIR_ESPECIFICACOES);
+            return {
+              text: msgPedir ?? 'Para eu encontrar o produto certo, informe as dimensões (ex.: 28 x 3,53) e, se souber, o material ou perfil (ex.: NBR70, BR).',
+              cart: cartAtual.length > 0 ? cartAtual : undefined,
+            };
+          }
+
+          // Passo 1: STRICT ou TOLERANCE (quando temos dims)
+          let resultados = await buscarProdutosPrisma(termoBusca, idEmitente.trim(), structured ? { structuredDimFilter: structured } : undefined);
+
+          // Passo 2: TOLERANCE (fallback se STRICT retornou 0)
+          if (resultados.length === 0 && structured && structured.mode === 'STRICT') {
+            resultados = await buscarProdutosPrisma(termoBusca, idEmitente.trim(), { structuredDimFilter: { ...structured, mode: 'TOLERANCE', toleranceMm: 0.2 } });
+          }
+
+          // Pesquisa por código com sucesso: resposta exclusivamente da tabela Configurações (sem LLM).
+          if (pareceCodigoProduto && resultados.length > 0) {
+            const msgCodigo = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_CODIGO);
+            const produtosCodigo = resultados.map((p) => mapBuscaToChatProduto(p) as unknown as Produto);
+            return {
+              text: msgCodigo ?? 'Produto(s) encontrado(s). Informe as quantidades e digite "pedir" para adicionar ao pedido.',
+              produtos: produtosCodigo,
+              cart: cartAtual.length > 0 ? cartAtual : undefined,
+            };
+          }
+
+          // Se a busca ficou ampla demais: pergunta medidas OU dureza (material sem dureza).
+          if (resultados.length > 40) {
+            const semDureza = plan.intent.material !== 'UNKNOWN' && !parseMaterialDureza(mensagem);
+            if (semDureza) {
+              return {
+                text: 'Achei várias opções para esse material.',
+                textoPergunta: 'Você precisa de uma dureza específica (ex.: 70 ou 90 Shore A)? Pode informar como NBR70, NBR90, etc.',
+                cart: cartAtual.length > 0 ? cartAtual : undefined,
+              };
+            }
+            if (plan.needsClarification) {
+              const q = buildClarifyingQuestion(plan);
+              return {
+                text: 'Achei algumas opções próximas, mas para eu acertar em cheio preciso de só mais um detalhe.',
+                textoPergunta: q ?? 'Você consegue informar as medidas que faltam?',
+                cart: cartAtual.length > 0 ? cartAtual : undefined,
+              };
+            }
+          }
+
           produtosEncontrados = resultados.map((p) => mapBuscaToChatProduto(p) as unknown as Produto);
-        } catch {
-          const [porCodigo, porDescricao] = await Promise.all([
-            consultarEstoque({ codigo: termo }),
-            consultarEstoque({ descricao: termo }),
-          ]);
-          const porId = new Map<string, Produto>();
-          [...porCodigo, ...porDescricao].forEach((p) => porId.set(p.id, p));
-          produtosEncontrados = Array.from(porId.values());
+        } catch (err) {
+          console.error('[groq] Erro na busca via banco/CTU:', err);
+          // Não fazer fallback para a API de estoque aqui para evitar trazer tabela inteira
+          // quando a busca estruturada falhar. Deixamos a lógica de "nenhum resultado"
+          // tratar esse caso mais abaixo.
+          produtosEncontrados = [];
         }
       } else {
         const [porCodigo, porDescricao] = await Promise.all([
@@ -645,18 +1161,19 @@ export async function gerarRespostaChat(
       }
 
       if (produtosEncontrados.length === 0) {
-        const textoSemResultado = `Pesquisando por "${termo}" não encontramos nenhum resultado no nosso estoque. É possível que você tenha digitado o código ou descrição incorretamente.`;
+        const msgNenhum = await getConfig(CONFIG_KEYS.MSG_NENHUM_RESULTADO);
         return {
-          text: textoSemResultado,
-          textoPergunta: 'Qual é o produto que devo procurar?',
+          text: msgNenhum ?? `Não encontrei nada com "${termo}" no estoque. Pode tentar de novo com o código, a descrição ou as medidas do produto.`,
+          textoPergunta: 'Quer tentar outra busca ou informar as medidas?',
           cart: cartAtual.length > 0 ? cartAtual : undefined,
         };
       }
       const ordenadosPorCodigo = [...produtosEncontrados].sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
       produtosRetorno = ordenadosPorCodigo;
+      const msgDescricao = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_DESCRICAO);
+      const textoComCount = (msgDescricao ?? 'Encontrei {n} produto(s). Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar os produtos ao pedido.').replace(/\{n\}/g, String(ordenadosPorCodigo.length));
       return {
-        text: `${ordenadosPorCodigo.length} Produtos encontrados.`,
-        textoPergunta: '1 - Incluir produto no pedido\n2 - Procurar por outro produto',
+        text: textoComCount,
         produtos: ordenadosPorCodigo,
         cart: cartAtual.length > 0 ? cartAtual : undefined,
       };
@@ -688,14 +1205,14 @@ export async function gerarRespostaChat(
     { role: 'user', content: mensagem },
   ];
 
-  const res = await fetch(GROQ_URL, {
+  const res = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: GROQ_MODEL,
+      model,
       messages,
       temperature: 0.7,
       max_tokens: 1024,

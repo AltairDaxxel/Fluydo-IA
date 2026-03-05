@@ -3,12 +3,21 @@
  * Pedido vinculado à loja, com valorTotal e comissão de 5%.
  */
 
-/** Item no carrinho do chat (antes de fechar o pedido) */
+/** Item no carrinho do chat (antes de fechar o pedido). Campos opcionais podem vir do cadastro do produto. */
 export interface ItemCarrinho {
   codigo: string;
   descricao: string;
   quantidade: number;
   precoUnitario?: number;
+  /** Preenchido pelo enriquecimento a partir do cadastro do produto */
+  unidade?: string;
+  /** Percentual IPI (cadastro do produto) */
+  ipi?: number | null;
+  dim1?: number | null;
+  dim2?: number | null;
+  dim3?: number | null;
+  dim4?: number | null;
+  aplicacao?: string;
 }
 
 export interface ItemPedido {

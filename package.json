@@ -1,15 +1,16 @@
 {
   "name": "fluydo-ai",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "scripts": {
-    "dev": "npx next dev",
+    "dev": "npx next dev -p 3000",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3000",
     "serve": "node scripts/serve-no-cache.js",
-    "dev:fresh": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true});console.log('.next apagado');\" && next dev",
+    "dev:fresh": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true});console.log('.next apagado');\" && next dev -p 3000",
     "typecheck": "tsc --noEmit",
     "test:types": "tsc --noEmit",
+    "test": "vitest run",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -27,6 +28,7 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "prisma": "^6.0.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^3.2.4"
   }
 }

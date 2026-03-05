@@ -1,0 +1,96 @@
+---
+description: Implementação do cérebro do Fluydo.IA - lógica de conversa e busca
+globs: lib/**/*.ts, app/api/**/*.ts
+alwaysApply: false
+---
+
+# Fluydo.IA – Cérebro de Conversa e Busca
+
+## Contexto
+
+Assistente de vendas de vedações industriais. Processa a entrada do usuário e decide entre resposta **social** ou busca **técnica** de produtos.
+
+## Tabelas de Dados
+
+| Tabela           | Uso                                                                 |
+|------------------|---------------------------------------------------------------------|
+| `Vocabulario`    | Termos oficiais de produto (Oring, Retentor, Gaxeta, Guia, etc.)    |
+| `GatilhosSociais`| Termos sociais por categoria (`Termo`, `Categoria`: saudacao, cortesia, gratidao) |
+| `Produtos`       | `Descricao`, dim1–dim4, `Codigo`, `Material`, `Aplicacao` para busca |
+
+> **Nota:** Se `GatilhosSociais` não existir no schema, adicione o model e a migration antes de implementar o filtro social.
+
+## Fluxo de Processamento
+
+### 1. Filtro de Intercorrência Social
+
+**Antes** de buscar produtos, verifique se a entrada (trim + lowercase) corresponde a `Termo` em `GatilhosSociais`:
+
+- **saudacao / cortesia:** Saudação conforme horário (Bom dia/Boa tarde/Boa noite) ou conforme o termo usado + "Em que posso te ajudar?"
+- **gratidao:** "Disponha! Precisa de mais alguma coisa?"
+
+Se corresponder → retornar texto social e **não** acionar busca.
+
+### 2. Extração de Entidades Técnicas
+
+Se não for social, extrair:
+
+| Entidade          | Fonte                             | Regex / Lógica                                                                 |
+|-------------------|-----------------------------------|--------------------------------------------------------------------------------|
+| **Produto**       | Tabela `Vocabulario`              | Palavras do texto que existem em Vocabulario.id ou Vocabulario.Descricao      |
+| **Medidas**       | Texto                             | `/(\d+(?:[.,]\d+)?)(?:[xX×\-\s]+(\d+(?:[.,]\d+)?))*/g` (28x3.53, 110-130-12)  |
+| **Material+Dureza** | Padrão [Material][Dureza]       | `/\b(NBR|VITON|FKM|SILICONE|EPDM|NYLON)\s*(\d{2,3})\b/gi` → token "NBR70"      |
+| **Aplicação**     | Texto                             | Termos conhecidos: ZF, TRW, Mando, Bosch, "Caixa de Direção", "Reparo"        |
+
+**Regex de medidas (dimensões):**
+```typescript
+// Números isolados ou em sequência (28x3.53, 110-130-12, 28 x 3.53)
+const MEDIDAS_REGEX = /(\d+(?:[.,]\d+)?)(?:[xX×\-\s]+(\d+(?:[.,]\d+)?))*/g;
+// Ou simples: números individuais
+const NUMEROS_REGEX = /(\d+(?:[.,]\d+)?)/g;
+```
+
+**Regex material+dureza (já existente em measureParser.ts):**
+```typescript
+const MATERIAL_DUREZA_REGEX = /\b(NBR|VITON|FKM|SILICONE|EPDM|SIL|NEOPRENE|PU|NYLON)\s*(\d{2,3})\b/gi;
+```
+
+**Regex aplicação/fabricante (exemplo):**
+```typescript
+const APLICACAO_REGEX = /\b(ZF|TRW|Mando|Bosch|BorgWarner|LUK)\b/i;
+const CAIXA_DIRECAO = /caixa\s*(de\s*)?dire[çc][ãa]o/i;
+const REPARO = /\breparo\b/i;
+```
+
+### 3. Lógica de Refinamento
+
+Antes de devolver lista grande ou query ampla:
+
+- **Vedação (Oring/Retentor/Gaxeta/Anel/Junta):** Sem medidas ou material/dureza → perguntar:  
+  "Para este [Produto], você tem as medidas ou o perfil? E qual o material (ex: NBR70)?"
+- **Automotivo (Reparos/Caixas):** Sem fabricante ou linha → perguntar:  
+  "Qual é o fabricante dessa peça ou a linha do veículo?"
+
+Usar `intelligentSearchEngine` → `plan.needsClarification` e `plan.clarifyingQuestion` para controlar isso. Em `groq.ts`, quando `resultados.length > 40` e `plan.needsClarification`, retornar a pergunta em vez da lista gigante.
+
+### 4. Montagem da Query / Busca
+
+- **Prisma/ORM:** Usar `busca-prisma.ts` com múltiplos termos no filtro.
+- **Padrão SQL equivalente:** `WHERE Descricao LIKE '%RETENTOR%' AND Descricao LIKE '%110%' AND Descricao LIKE '%NBR70%'`
+- Combinar termos do Vocabulario + números + material+dureza na string de busca (`termoBusca`).
+- Filtro estrutural (dim1, dim2, etc.) quando o plano tiver `plan.dims` preenchido.
+
+## Arquivos Principais
+
+| Arquivo                         | Responsabilidade                                       |
+|---------------------------------|--------------------------------------------------------|
+| `lib/search/intelligentSearchEngine.ts` | Plano de busca, needsClarification, clarifyingQuestion |
+| `lib/search/measureParser.ts`   | parseMeasures, parseMaterialDureza, inferProductType   |
+| `lib/search/productVocabulary.ts` | Termos do Vocabulario para a busca                    |
+| `lib/busca-prisma.ts`          | Query em Produtos com termo e dims                     |
+| `lib/groq.ts`                  | Orquestração, decisão social vs busca, refinamento     |
+
+## Estilo
+
+- Fluydo deve ser curto, técnico e prestativo.
+- Evitar repetir "Eu sou o Fluydo" se já foi dito na abertura.
