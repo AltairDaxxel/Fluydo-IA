@@ -23,6 +23,7 @@ import { parseMeasures, parseMaterialDureza } from './search/measureParser';
 import { checkSocialTrigger } from './search/socialTriggers';
 import { getHelpBySlug, getHelpSuggestions, listHelpArticles, isExplicitHelpRequest } from './help/fluydoAjuda';
 import type { AjudaArtigo, AjudaArtigoComExemplos } from './help/types';
+import { executarMotorBusca } from './motor-busca';
 
 config({ path: path.resolve(process.cwd(), '.env.local') });
 config({ path: path.join(__dirname, '..', '.env.local') });
@@ -923,6 +924,32 @@ export async function gerarRespostaChat(
           const pareceCodigoProduto = termCount === 1
             ? /^[A-Za-z0-9._-]+$/i.test(tokensFiltrados[0]) && tokensFiltrados[0].length >= 2
             : /^[A-Za-z0-9._-]+$/i.test(mensagem.trim()) && mensagem.trim().length >= 2 && !/\s/.test(mensagem.trim());
+
+          // Motor de busca por trilhas (sempre usado). Regra: d1→dim1, d2→dim2, d3→dim3, d4→dim4 não entram na CTU. Ver lib/motor-busca.ts.
+          const motorRes = await executarMotorBusca(mensagem, idEmitente.trim());
+          if (motorRes.trilha === 'PEDIR_DETALHES' && motorRes.mensagem) {
+            return { text: motorRes.mensagem, cart: cartAtual.length > 0 ? cartAtual : undefined };
+          }
+          if (motorRes.trilha === 'NENHUMA' && motorRes.mensagem) {
+            return { text: motorRes.mensagem, cart: cartAtual.length > 0 ? cartAtual : undefined };
+          }
+          if (motorRes.produtos && motorRes.produtos.length > 0) {
+            const produtosChat = motorRes.produtos
+              .map((p) => mapBuscaToChatProduto(p) as unknown as Produto)
+              .sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
+            return {
+              text: motorRes.textoResposta ?? (await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_DESCRICAO))?.replace(/\{n\}/g, String(produtosChat.length)) ?? `Encontrei ${produtosChat.length} produto(s).`,
+              produtos: produtosChat,
+              cart: cartAtual.length > 0 ? cartAtual : undefined,
+            };
+          }
+          if (motorRes.mensagem) {
+            return { text: motorRes.mensagem, cart: cartAtual.length > 0 ? cartAtual : undefined };
+          }
+          return {
+            text: motorRes.textoResposta ?? motorRes.mensagem ?? (await getConfig(CONFIG_KEYS.MSG_NENHUM_RESULTADO)) ?? 'Não encontrei nada com essa busca.',
+            cart: cartAtual.length > 0 ? cartAtual : undefined,
+          };
 
           // (2) Pesquisa por código (isolado): quando o termo único parece código.
           if (termCount === 1 && pareceCodigoProduto) {
