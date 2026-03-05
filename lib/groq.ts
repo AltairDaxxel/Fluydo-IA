@@ -10,7 +10,7 @@ import { buscarNaWeb } from './busca-web';
 import { consultarEstoque } from './estoque';
 import { buscarClientePorCpfCnpj, listarCondicoesPagamento } from './clientes';
 import { hasDatabase } from './prisma';
-import { buscarProdutosPrisma, buscarProdutosPorCodigo, mapBuscaToChatProduto } from './busca-prisma';
+import { buscarProdutosPrisma, buscarProdutosPorCodigo, mapBuscaToChatProduto, parseLabels } from './busca-prisma';
 import { findLinhaMatch, isLinhaBloqueadaOuExclusiva, searchProductsByLinha, extractLinhaCandidates } from './linhas';
 import { getConfig, CONFIG_KEYS } from './configuracoes';
 import { listarPagamentos, formatarOpcoesPagamentos } from './pagamentos';
@@ -1094,8 +1094,18 @@ export async function gerarRespostaChat(
           }
 
           // Refinamento: entrada com só nome do produto (sem dimensões, material/dureza ou perfil) → pedir especificações (não buscar).
+          // Considera também rótulos (d1/d2/d3/d4, mat, perf, apli): se a mensagem já tiver, não pedir de novo.
           const temPerfil = /\b(BR|BA|BS|AS|V|VB)\b/i.test(mensagem);
-          if (!pareceCodigoProduto && vocabTerms.length > 0 && !temDims && !materialDureza && !temPerfil) {
+          const parsedLabels = parseLabels(mensagem);
+          const temRotulos =
+            parsedLabels.dim1 != null ||
+            parsedLabels.dim2 != null ||
+            parsedLabels.dim3 != null ||
+            parsedLabels.dim4 != null ||
+            (parsedLabels.material != null && parsedLabels.material.length > 0) ||
+            (parsedLabels.perfil != null && parsedLabels.perfil.length > 0) ||
+            (parsedLabels.aplicacao != null && parsedLabels.aplicacao.length > 0);
+          if (!pareceCodigoProduto && vocabTerms.length > 0 && !temDims && !materialDureza && !temPerfil && !temRotulos) {
             const msgPedir = await getConfig(CONFIG_KEYS.MSG_PEDIR_ESPECIFICACOES);
             return {
               text: msgPedir ?? 'Para eu encontrar o produto certo, informe as dimensões (ex.: 28 x 3,53) e, se souber, o material ou perfil (ex.: NBR70, BR).',
