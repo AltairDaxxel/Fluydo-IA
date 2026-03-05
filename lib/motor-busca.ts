@@ -5,7 +5,9 @@
  * passar apenas uma informação (um único termo), retorna mensagem pedindo mais detalhes.
  *
  * Trilhas:
- * - A: busca pelo código da linha ou, na ausência, pela descrição da linha; filtra produtos com esse prefixo.
+ * - CODIGO_DIRETO: 1 token que parece código ou 2 tokens combinados (ex.: cen 2010 → cen.2010); busca por Produtos.Codigo.
+ * - A1: exatamente 2 argumentos — um é linha conhecida e o outro é parte do código/descrição; filtra produtos da linha pelo outro termo.
+ * - A: busca pelo código da linha ou pela descrição da linha (quando a mensagem contém "linha"); filtra produtos com esse prefixo.
  * - B: remove ruídos, valida produto pelo vocabulário e combina produto com dimensões (DIM1..DIM4).
  * - B1: combina prefixo da linha ou parte do código com o produto.
  * - C: combina produto, material ("mat") ou perfil ("perf") diretamente no CTU e filtra também pelas dimensões.
@@ -42,7 +44,7 @@ import { intelligentSearchEngine } from './search/intelligentSearchEngine';
 import { getVocabularySearchTerms } from './search/productVocabulary';
 
 /** Identificador da trilha executada */
-export type TrilhaId = 'A' | 'B' | 'B1' | 'C' | 'CODIGO_DIRETO' | 'PEDIR_DETALHES' | 'NENHUMA';
+export type TrilhaId = 'A' | 'A1' | 'B' | 'B1' | 'C' | 'CODIGO_DIRETO' | 'PEDIR_DETALHES' | 'NENHUMA';
 
 export interface ResultadoMotor {
   /** Trilha que produziu o resultado (ou que seria usada em modo simulado) */
@@ -346,42 +348,115 @@ async function executarTrilhaC(
   };
 }
 
-/** Busca direta por código (um único token que parece código). Integração DB: buscarProdutosPorCodigo. */
+/** Combinações de 2 tokens para tentar como código (ex.: cen 2010 → cen.2010, cen-2010, cen2010). */
+function combinacoesCodigo(token0: string, token1: string): string[] {
+  const a = (token0 || '').trim();
+  const b = (token1 || '').trim();
+  if (!a || !b) return [];
+  const padrao = /^[A-Za-z0-9._-]+$/i;
+  if (!padrao.test(a) || !padrao.test(b)) return [];
+  return [`${a}.${b}`, `${a}-${b}`, `${a}${b}`];
+}
+
+/** Busca direta por código: 1 token que parece código ou 2 tokens combinados (ex.: cen 2010 → cen.2010). Integração DB: buscarProdutosPorCodigo. */
 async function executarCodigoDireto(
   mensagem: string,
   tokens: string[],
   idEmitente: string,
   simular: boolean
 ): Promise<ResultadoMotor | null> {
-  if (tokens.length !== 1) return null;
-  const termo = tokens[0];
-  const pareceCodigo = /^[A-Za-z0-9._-]+$/i.test(termo) && termo.length >= 2;
-  if (!pareceCodigo) return null;
+  const termoUnico = tokens.length === 1 ? tokens[0] : null;
+  const doisTermos = tokens.length === 2 ? [tokens[0], tokens[1]] : null;
+
+  if (termoUnico) {
+    const pareceCodigo = /^[A-Za-z0-9._-]+$/i.test(termoUnico) && termoUnico.length >= 2;
+    if (!pareceCodigo) return null;
+    if (simular) {
+      return { trilha: 'CODIGO_DIRETO', simulado: true, textoResposta: `[Simulado] Busca por código direto: "${termoUnico}".`, contexto: { codigo: termoUnico } };
+    }
+    const produtos = await buscarProdutosPorCodigo(termoUnico, idEmitente);
+    if (produtos.length === 0) return null;
+    const msg = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_CODIGO);
+    return { trilha: 'CODIGO_DIRETO', produtos, textoResposta: msg ?? 'Produto(s) encontrado(s). Informe as quantidades e digite "pedir" para adicionar ao pedido.', contexto: { codigo: termoUnico } };
+  }
+
+  if (doisTermos) {
+    const candidatos = combinacoesCodigo(doisTermos[0], doisTermos[1]);
+    if (candidatos.length === 0) return null;
+    if (simular) {
+      return { trilha: 'CODIGO_DIRETO', simulado: true, textoResposta: `[Simulado] Busca por código (2 termos): tentar ${candidatos.join(', ')}.`, contexto: { candidatos } };
+    }
+    for (const codigo of candidatos) {
+      const produtos = await buscarProdutosPorCodigo(codigo, idEmitente);
+      if (produtos.length > 0) {
+        const msg = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_CODIGO);
+        return { trilha: 'CODIGO_DIRETO', produtos, textoResposta: msg ?? 'Produto(s) encontrado(s). Informe as quantidades e digite "pedir" para adicionar ao pedido.', contexto: { codigo } };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Trilha A1: dois argumentos → um é linha conhecida e o outro é parte do código/descrição.
+ * Busca produtos da linha (prefixo Codigo) e filtra pelo outro token em Codigo ou Descricao.
+ * Só roda quando há exatamente 2 tokens; se falhar, o motor segue para as outras trilhas.
+ */
+async function executarTrilhaLinhaMaisCodigo(
+  tokens: string[],
+  idEmitente: string,
+  simular: boolean
+): Promise<ResultadoMotor | null> {
+  if (tokens.length !== 2) return null;
+  const [t0, t1] = [tokens[0].trim(), tokens[1].trim()];
+  if (!t0 || !t1) return null;
 
   if (simular) {
     return {
-      trilha: 'CODIGO_DIRETO',
+      trilha: 'A1',
       simulado: true,
-      textoResposta: `[Simulado] Busca por código direto: "${termo}". Integração DB: buscarProdutosPorCodigo(codigo, idEmitente).`,
-      contexto: { codigo: termo },
+      textoResposta: `[Simulado] Trilha A1: 2 argumentos — tentar linha "${t0}" + parte "${t1}" e linha "${t1}" + parte "${t0}".`,
+      contexto: { token0: t0, token1: t1 },
     };
   }
 
-  const produtos = await buscarProdutosPorCodigo(termo, idEmitente);
-  if (produtos.length === 0) return null;
+  const msgSucesso = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_DESCRICAO);
+  const textoOk = (n: number) => (msgSucesso ?? 'Encontrei {n} produto(s). Informe as quantidades e digite "pedir" para adicionar ao pedido.').replace(/\{n\}/g, String(n));
 
-  const msg = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_CODIGO);
-  return {
-    trilha: 'CODIGO_DIRETO',
-    produtos,
-    textoResposta: msg ?? 'Produto(s) encontrado(s). Informe as quantidades e digite "pedir" para adicionar ao pedido.',
-    contexto: { codigo: termo },
+  const filtrarPorParte = (produtos: ProdutoBuscaResult[], parte: string): ProdutoBuscaResult[] => {
+    const p = parte.toLowerCase();
+    return produtos.filter(
+      (row) =>
+        (row.codigo != null && row.codigo.toLowerCase().includes(p)) ||
+        (row.descricao != null && row.descricao.toLowerCase().includes(p))
+    );
   };
+
+  for (const [linhaCandidato, parteCodigo] of [
+    [t0, t1] as const,
+    [t1, t0] as const,
+  ]) {
+    const linhaMatch = await findLinhaMatch(linhaCandidato);
+    if (!linhaMatch || isLinhaBloqueadaOuExclusiva(linhaMatch)) continue;
+    const porLinha = await searchProductsByLinha(linhaMatch.linha, idEmitente);
+    const filtrados = filtrarPorParte(porLinha, parteCodigo);
+    if (filtrados.length > 0) {
+      return {
+        trilha: 'A1',
+        produtos: filtrados,
+        textoResposta: textoOk(filtrados.length),
+        contexto: { linha: linhaMatch.linha, parteCodigo },
+      };
+    }
+  }
+
+  return null;
 }
 
 /**
  * Executa o motor de busca por trilhas.
- * Ordem: regra geral (pedir detalhes) → código direto → Trilha A (linha) → B → B1 → C.
+ * Ordem: regra geral → código direto (1 ou 2 tokens) → linha + parte código (2 tokens) → Trilha A → B → B1 → C.
  * Quando simular = true, não consulta o banco; retorna qual trilha seria usada e mensagem contextual.
  */
 export async function executarMotorBusca(
@@ -412,11 +487,15 @@ export async function executarMotorBusca(
     return regraGeral;
   }
 
-  // Código direto (um único termo que parece código)
+  // Código direto: 1 token que parece código ou 2 tokens combinados (ex.: cen 2010 → cen.2010)
   const codigoDir = await executarCodigoDireto(mensagem, tokens, idEmit, simular);
   if (codigoDir) return codigoDir;
 
-  // Trilha A: linha
+  // Trilha A1: 2 argumentos — um é linha conhecida e o outro é parte do código/descrição
+  const trilhaA1 = await executarTrilhaLinhaMaisCodigo(tokens, idEmit, simular);
+  if (trilhaA1) return trilhaA1;
+
+  // Trilha A: linha (quando a mensagem contém a palavra "linha")
   const trilhaA = await executarTrilhaA(mensagem, idEmit, simular);
   if (trilhaA) return trilhaA;
 
