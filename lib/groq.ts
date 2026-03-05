@@ -994,8 +994,8 @@ export async function gerarRespostaChat(
           // (2) Pesquisa por código (isolado): somente quando a mensagem inteira é um código (sem espaços).
           // Não usar esse caminho quando houver também descrição (ex.: "anel 2010", "retentor BAG").
           const codigoCandidato = extractCodigoCandidato(mensagem);
-          if (!mensagem.includes(' ') && pareceCodigoProduto && codigoCandidato) {
-            const porCodigoPrimeiro = await buscarProdutosPorCodigo(codigoCandidato, idEmitente.trim());
+          if (!mensagem.includes(' ') && pareceCodigoProduto && codigoCandidato !== null) {
+            const porCodigoPrimeiro = await buscarProdutosPorCodigo(codigoCandidato as string, idEmitente.trim());
             if (porCodigoPrimeiro.length > 0) {
               const msgCodigo = await getConfig(CONFIG_KEYS.MSG_SUCESSO_BUSCA_CODIGO);
               const produtosCodigo = porCodigoPrimeiro
@@ -1035,8 +1035,8 @@ export async function gerarRespostaChat(
             const numeros = parseMeasures(mensagem).numbers;
             numerosStr = numeros.length > 0 ? ' ' + numeros.join(' ') : '';
             const materialDurezaStr = materialDureza ? ' ' + materialDureza : '';
-            const perfilMatch = mensagem.match(/\b(BR|BA|BS|AS|V|VB)\b/gi);
-            perfilStr = perfilMatch && perfilMatch.length > 0 ? ' ' + [...new Set(perfilMatch)].join(' ') : '';
+            const perfilMatch = mensagem.match(/\b(BR|BA|BS|AS|V|VB)\b/gi) ?? [];
+            perfilStr = perfilMatch.length > 0 ? ' ' + [...new Set(perfilMatch)].join(' ') : '';
             const tokensMsg = mensagem.split(/[\s.\-_/\\]+/).map((t) => t.trim().toLowerCase()).filter((t) => t.length >= 2 && !/^\d+([.,]\d+)?$/.test(t.replace(',', '.')) && !stopWords.has(t));
             const todasPalavras = [...new Set([...vocabTerms, ...tokensMsg])];
             termoBusca = (todasPalavras.join(' ') + (materialDureza ? ' ' + materialDureza : '') + perfilStr + numerosStr).trim() || mensagem;
@@ -1055,7 +1055,7 @@ export async function gerarRespostaChat(
               const termoProdutoCodigo = (palavrasProdutoParaCodigo + ' ' + codigoCandidato).trim();
               const r1 = await buscarProdutosPrisma(termoProdutoCodigo, idEmitente.trim());
               const out1 = await formatarRetornoCascata(r1);
-              if (out1) return out1;
+              if (out1 != null) return out1 as ChatResponse;
             }
 
             // (2) Produto + dimensões
@@ -1063,7 +1063,7 @@ export async function gerarRespostaChat(
               const termoProdutoDims = (vocabTerms.join(' ') + (materialDureza ? ' ' + materialDureza : '') + perfilStr).trim();
               const r2 = await buscarProdutosPrisma(termoProdutoDims || mensagem, idEmitente.trim(), { structuredDimFilter: structured });
               const out2 = await formatarRetornoCascata(r2);
-              if (out2) return out2;
+              if (out2 != null) return out2 as ChatResponse;
             }
 
             // (3) Produto + palavra relevante ou perfil ou material (inclui números para ex.: anel 2010)
@@ -1072,7 +1072,7 @@ export async function gerarRespostaChat(
               if (termoProdutoPalavra) {
                 const r3 = await buscarProdutosPrisma(termoProdutoPalavra, idEmitente.trim());
                 const out3 = await formatarRetornoCascata(r3);
-                if (out3) return out3;
+                if (out3 != null) return out3 as ChatResponse;
               }
             }
           } catch (e) {
@@ -1087,8 +1087,8 @@ export async function gerarRespostaChat(
               linhaMatch = await findLinhaMatch(candidate);
               if (linhaMatch) break;
             }
-            if (linhaMatch) {
-              if (isLinhaBloqueadaOuExclusiva(linhaMatch)) {
+            if (linhaMatch != null) {
+              if (isLinhaBloqueadaOuExclusiva(linhaMatch!)) {
                 const msg = await getConfig(CONFIG_KEYS.MSG_LINHA_INDISPONIVEL);
                 return {
                   text: msg ?? 'Essa linha de produto é de venda exclusiva, não está disponível.',
@@ -1096,7 +1096,7 @@ export async function gerarRespostaChat(
                   cart: cartAtual.length > 0 ? cartAtual : undefined,
                 };
               }
-              const porLinha = await searchProductsByLinha(linhaMatch.linha, idEmitente.trim());
+              const porLinha = await searchProductsByLinha(linhaMatch!.linha, idEmitente.trim());
               if (porLinha.length > 0) {
                 const ordenados = [...porLinha]
                   .map((p) => mapBuscaToChatProduto(p) as unknown as Produto)
@@ -1129,9 +1129,9 @@ export async function gerarRespostaChat(
             parsedLabels.dim2 != null ||
             parsedLabels.dim3 != null ||
             parsedLabels.dim4 != null ||
-            (parsedLabels.material != null && parsedLabels.material.length > 0) ||
-            (parsedLabels.perfil != null && parsedLabels.perfil.length > 0) ||
-            (parsedLabels.aplicacao != null && parsedLabels.aplicacao.length > 0);
+            ((parsedLabels.material?.length ?? 0) > 0) ||
+            ((parsedLabels.perfil?.length ?? 0) > 0) ||
+            ((parsedLabels.aplicacao?.length ?? 0) > 0);
           if (!pareceCodigoProduto && vocabTerms.length > 0 && !temDims && !materialDureza && !temPerfil && !temRotulos) {
             const msgPedir = await getConfig(CONFIG_KEYS.MSG_PEDIR_ESPECIFICACOES);
             return {
@@ -1144,8 +1144,9 @@ export async function gerarRespostaChat(
           let resultados = await buscarProdutosPrisma(termoBusca, idEmitente.trim(), structured ? { structuredDimFilter: structured } : undefined);
 
           // Passo 2: TOLERANCE (fallback se STRICT retornou 0)
-          if (resultados.length === 0 && structured && structured.mode === 'STRICT') {
-            resultados = await buscarProdutosPrisma(termoBusca, idEmitente.trim(), { structuredDimFilter: { ...structured, mode: 'TOLERANCE', toleranceMm: 0.2 } });
+          const struct = structured;
+          if (resultados.length === 0 && struct !== undefined && struct !== null && struct.mode === 'STRICT') {
+            resultados = await buscarProdutosPrisma(termoBusca, idEmitente.trim(), { structuredDimFilter: { ...struct, mode: 'TOLERANCE', toleranceMm: 0.2 } });
           }
 
           // Pesquisa por código com sucesso: resposta exclusivamente da tabela Configurações (sem LLM).
