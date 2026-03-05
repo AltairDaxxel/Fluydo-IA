@@ -1072,9 +1072,8 @@ export async function gerarRespostaChat(
           let resultados = await buscarProdutosPrisma(termoBusca, idEmitente.trim(), structured ? { structuredDimFilter: structured } : undefined);
 
           // Passo 2: TOLERANCE (fallback se STRICT retornou 0)
-          const struct = structured;
-          if (resultados.length === 0 && struct !== undefined && struct !== null && struct.mode === 'STRICT') {
-            resultados = await buscarProdutosPrisma(termoBusca, idEmitente.trim(), { structuredDimFilter: { ...struct, mode: 'TOLERANCE', toleranceMm: 0.2 } });
+          if (resultados.length === 0 && structured?.mode === 'STRICT') {
+            resultados = await buscarProdutosPrisma(termoBusca, idEmitente.trim(), { structuredDimFilter: { ...structured!, mode: 'TOLERANCE', toleranceMm: 0.2 } });
           }
 
           // Pesquisa por código com sucesso: resposta exclusivamente da tabela Configurações (sem LLM).
