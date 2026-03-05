@@ -16,7 +16,6 @@ import { getConfig, CONFIG_KEYS } from './configuracoes';
 import { listarPagamentos, formatarOpcoesPagamentos } from './pagamentos';
 import { buscarEnderecoPorCep, formatarEnderecoParaChat } from './cep';
 import { intelligentSearchEngine } from './search/intelligentSearchEngine';
-import { parseToleranceCommand } from './search/tolerance';
 import { buildClarifyingQuestion } from './search/messagePolicy';
 import { getVocabularySearchTerms } from './search/productVocabulary';
 import { parseMeasures, parseMaterialDureza } from './search/measureParser';
@@ -431,19 +430,6 @@ export async function gerarRespostaChat(
   const opcoesInsuficiente = /estoque é insuficiente|1\s*-\s*Manter a quantidade|2\s*-\s*Alterar a quantidade/i;
   const ultimaPerguntaQtd = /qual é a quantidade\?/i.test(ultimaRespostaAssistente);
 
-  function encontrarUltimaMensagemComMedidas(): string | null {
-    for (let i = historico.length - 1; i >= 0; i--) {
-      if (historico[i].role !== 'user') continue;
-      const text = historico[i].parts.map((p) => p.text).join(' ').trim();
-      if (!text || text.includes('?')) continue;
-      // Tem números e algum indicativo de medida/produto técnico
-      if (/\d/.test(text) && /(x|×|medida|oring|o-ring|retentor|anel|gaxeta|junta)/i.test(text)) {
-        return text;
-      }
-    }
-    return null;
-  }
-
   function obterUltimoItemQtdDoHistorico(): { itemNum: number; qtd: number } | null {
     for (let i = historico.length - 1; i >= 0; i--) {
       if (historico[i].role !== 'user') continue;
@@ -470,64 +456,6 @@ export async function gerarRespostaChat(
       exibirCarrinho: true,
       textoPergunta:
         'Você pode digitar "alterar pedido" para mudar algum item, "incluir outro item" para adicionar mais produtos, "buscar produto" para pesquisar de novo ou "finalizar pedido" para concluir.',
-    };
-  }
-
-  // Comando de tolerância: ex. "5% de tolerância", "10% pra mais", "±3%"
-  const toleranceCmd = parseToleranceCommand(mensagem);
-  if (toleranceCmd && hasDatabase() && idEmitente.trim()) {
-    const lastSearchText = encontrarUltimaMensagemComMedidas();
-    if (!lastSearchText) {
-      return {
-        text: 'Consigo sim aplicar tolerância nas medidas. Só me diga primeiro a medida que você quer procurar (ex.: 140x60).',
-        cart: cartAtual.length > 0 ? cartAtual : undefined,
-      };
-    }
-
-    const planBase = intelligentSearchEngine(lastSearchText, { preferSearchOverClarify: true });
-    const dims = planBase.dims;
-    const hasAnyDim = dims.dim1 != null || dims.dim2 != null || dims.dim3 != null || dims.dim4 != null;
-    if (!hasAnyDim) {
-      return {
-        text: 'Para eu aplicar tolerância, preciso primeiro das medidas (ex.: 140x60 ou 110x130x13).',
-        cart: cartAtual.length > 0 ? cartAtual : undefined,
-      };
-    }
-
-    const structured = {
-      mode: 'TOLERANCE' as const,
-      dim1: dims.dim1 ?? null,
-      dim2: dims.dim2 ?? null,
-      dim3: dims.dim3 ?? null,
-      dim4: dims.dim4 ?? null,
-      tolerancePercent: toleranceCmd.percent / 100,
-      direction: toleranceCmd.mode,
-    };
-
-    const resultadosTol = await buscarProdutosPrisma(lastSearchText, idEmitente.trim(), { structuredDimFilter: structured });
-
-    const fraseModo =
-      toleranceCmd.mode === 'PLUS_ONLY'
-        ? `até ${toleranceCmd.percent}% pra mais`
-        : toleranceCmd.mode === 'MINUS_ONLY'
-        ? `até ${toleranceCmd.percent}% pra menos`
-        : `${toleranceCmd.percent}% de tolerância`;
-
-    if (resultadosTol.length === 0) {
-      return {
-        text: `Refiz a busca com ${fraseModo}, mas não encontrei nenhuma opção no estoque. Se quiser, podemos tentar outra medida ou ajustar a tolerância.`,
-        cart: cartAtual.length > 0 ? cartAtual : undefined,
-      };
-    }
-
-    const ordenadosTol = resultadosTol
-      .map((p) => mapBuscaToChatProduto(p) as unknown as Produto)
-      .sort((a, b) => a.codigo.localeCompare(b.codigo, undefined, { numeric: true }));
-
-    return {
-      text: `Beleza — refiz a busca com ${fraseModo} e encontrei ${ordenadosTol.length} produto(s). Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar os produtos ao pedido.`,
-      produtos: ordenadosTol,
-      cart: cartAtual.length > 0 ? cartAtual : undefined,
     };
   }
 
