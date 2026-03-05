@@ -945,20 +945,20 @@ export async function gerarRespostaChat(
           if (termCount === 1) {
             const msgPedir = await getConfig(CONFIG_KEYS.MSG_PEDIR_ESPECIFICACOES);
             return {
-              text: msgPedir ?? 'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" antes das dimensões (ex.: medida 140 170), "perf" antes do perfil (ex.: perf BAG) e "mat" antes do material ou dureza (ex.: mat NBR70). Você pode combinar com o nome do produto, por exemplo: retentor medida 140 170 perf BAG mat NBR70.',
+              text: msgPedir ?? 'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" ou d1/d2/d3/d4 antes das dimensões (ex.: medida 140 170 ou d1 140 d2 170), "perf" antes do perfil (ex.: perf BAG), "mat" antes do material (ex.: mat NBR70) e "apli" antes da aplicação (ex.: apli motor). Exemplo completo: retentor d1 140 d2 170 perf BAG mat NBR70 apli eixo.',
               cart: cartAtual.length > 0 ? cartAtual : undefined,
             };
           }
 
-          // Regra 2–3 termos: se houver número no 2º ou 3º termo sem rótulo (medida/perf/mat/d1/dim1...), pedir para o usuário rotular.
+          // Regra 2–3 termos: se houver número no 2º ou 3º termo sem rótulo (medida/perf/mat/apli/d1/dim1...), pedir para o usuário rotular.
           if (termCount >= 2 && termCount <= 3) {
             const hasNumeroNo23 = tokensFiltrados.slice(1, 3).some((t) => /^\d+([.,]\d+)?$/.test(t.replace(',', '.')));
             const temRotulo =
-              /\b(d1|d2|d3|d4|dim1|dim2|dim3|dim4|medida|perf|mat)\b/i.test(mensagem);
+              /\b(d1|d2|d3|d4|dim1|dim2|dim3|dim4|medida|perf|mat|apli)\b/i.test(mensagem);
             if (hasNumeroNo23 && !temRotulo) {
               const msgPedir = await getConfig(CONFIG_KEYS.MSG_PEDIR_ESPECIFICACOES);
               return {
-                text: msgPedir ?? 'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" antes das dimensões (ex.: medida 140 170), "perf" antes do perfil (ex.: perf BAG) e "mat" antes do material ou dureza (ex.: mat NBR70). Você pode combinar com o nome do produto, por exemplo: retentor medida 140 170 perf BAG mat NBR70.',
+                text: msgPedir ?? 'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" ou d1/d2/d3/d4 antes das dimensões (ex.: medida 140 170 ou d1 140 d2 170), "perf" antes do perfil (ex.: perf BAG), "mat" antes do material (ex.: mat NBR70) e "apli" antes da aplicação (ex.: apli motor). Exemplo completo: retentor d1 140 d2 170 perf BAG mat NBR70 apli eixo.',
                 cart: cartAtual.length > 0 ? cartAtual : undefined,
               };
             }

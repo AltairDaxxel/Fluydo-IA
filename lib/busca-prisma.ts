@@ -73,6 +73,19 @@ export interface ProdutoBuscaResult {
   ipi: number | null;
 }
 
+/** Rótulos: d1/d2/d3/d4 → dim1..dim4; mat → Material; perf → CTU (perfil); apli → Aplicacao */
+export interface ParsedLabels {
+  /** Tokens restantes para busca na CTU (nome do produto, perfil já incluso se houver "perf X") */
+  termosCTU: string[];
+  dim1?: number;
+  dim2?: number;
+  dim3?: number;
+  dim4?: number;
+  material?: string;
+  perfil?: string;
+  aplicacao?: string;
+}
+
 function decimalToNumber(d: unknown): number {
   if (d == null) return 0;
   if (typeof d === 'number') return d;
@@ -90,6 +103,62 @@ function extrairNumeros(texto: string): number[] {
     if (!Number.isNaN(n) && n > 0) numeros.push(n);
   }
   return numeros;
+}
+
+const ROTULOS_DIM = /^(d1|d2|d3|d4|dim1|dim2|dim3|dim4)$/i;
+const ROTULO_MAT = /^mat$/i;
+const ROTULO_PERF = /^perf$/i;
+const ROTULO_APLI = /^apli$/i;
+function isNumberToken(t: string): boolean {
+  return /^\d+([.,]\d+)?$/.test(t) && !Number.isNaN(parseFloat(t.replace(',', '.')));
+}
+
+/**
+ * Parseia rótulos na mensagem: d1/d2/d3/d4 (ou dim1..dim4) → dimensões; mat → material; perf → perfil (CTU); apli → aplicação (campo Aplicacao).
+ * Retorna termos restantes para CTU (sem os rótulos nem os valores usados em dim/material/aplicação) e perfil incluso em termosCTU.
+ */
+export function parseLabels(mensagem: string): ParsedLabels {
+  const texto = (mensagem || '').trim().replace(/,/g, '.');
+  const tokens = texto.split(/\s+/).map((t) => t.trim()).filter(Boolean);
+  const termosCTU: string[] = [];
+  const out: ParsedLabels = { termosCTU };
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i];
+    const next = tokens[i + 1];
+    const tLower = t.toLowerCase();
+
+    if (ROTULOS_DIM.test(t) && next !== undefined && isNumberToken(next)) {
+      const num = parseFloat(next.replace(',', '.'));
+      if (!Number.isNaN(num)) {
+        if (/^d1|dim1$/i.test(t)) out.dim1 = num;
+        else if (/^d2|dim2$/i.test(t)) out.dim2 = num;
+        else if (/^d3|dim3$/i.test(t)) out.dim3 = num;
+        else if (/^d4|dim4$/i.test(t)) out.dim4 = num;
+        i += 1;
+        continue;
+      }
+    }
+    if (ROTULO_MAT.test(t) && next !== undefined && next.length > 0) {
+      out.material = next.trim();
+      i += 1;
+      continue;
+    }
+    if (ROTULO_PERF.test(t) && next !== undefined && next.length > 0) {
+      out.perfil = next.trim();
+      termosCTU.push(next.trim());
+      i += 1;
+      continue;
+    }
+    if (ROTULO_APLI.test(t) && next !== undefined && next.length > 0) {
+      out.aplicacao = next.trim();
+      i += 1;
+      continue;
+    }
+    termosCTU.push(t);
+  }
+
+  return out;
 }
 
 /** Normaliza medidas: ponto vira vírgula (31.9 → 31,9). Usuário pode digitar com ponto ou vírgula; internamente buscamos com vírgula. */
@@ -411,57 +480,56 @@ export async function buscarProdutosPrisma(
   const textoOriginal = (mensagem || '').trim();
   if (!textoOriginal) return [];
 
-  // 1) Normaliza vírgula para ponto (medidas): 28,5 -> 28.5
-  const texto = textoOriginal.replace(/,/g, '.');
+  // 1) Parser de rótulos: d1..d4 → dim1..dim4; mat → Material; perf → CTU; apli → Aplicacao
+  const parsed = parseLabels(textoOriginal);
 
-  // 2) Tokenização simples por espaço
-  const tokens = texto
-    .split(/\s+/)
-    .map((t) => (t && t.trim()) || '')
-    .filter((t) => t.length > 0);
-
-  if (tokens.length === 0) return [];
-
-  // 3) Remoção apenas de saudações básicas (Oi, bom dia, boa tarde, boa noite)
+  // 2) Remoção de saudações nos termos que vão para a CTU
   const saudacoesSimples = new Set(['oi', 'olá', 'ola']);
-
   const termos: string[] = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    const atual = tokens[i];
-    const prox = tokens[i + 1];
+  const termosCTU = parsed.termosCTU;
+  for (let i = 0; i < termosCTU.length; i += 1) {
+    const atual = termosCTU[i];
+    const prox = termosCTU[i + 1];
     const atualLower = atual.toLowerCase();
     const proxLower = prox?.toLowerCase();
-
-    // Combos "bom dia", "boa tarde", "boa noite"
     if (
       (atualLower === 'bom' && proxLower === 'dia') ||
       (atualLower === 'boa' && (proxLower === 'tarde' || proxLower === 'noite'))
     ) {
-      i += 1; // pula o próximo também
+      i += 1;
       continue;
     }
-
-    // Saudações de uma palavra
     if (saudacoesSimples.has(atualLower)) continue;
-
     termos.push(atual);
   }
 
-  if (termos.length === 0) return [];
-
-  // 4) Conjunto final de keywords para CTU: todas as palavras remanescentes (incluindo números), em UPPER.
   const keywords = Array.from(new Set(termos.map((t) => t.toUpperCase()))).filter((t) => t.length > 0);
-  if (keywords.length === 0) return [];
+  const hasStructured = [parsed.dim1, parsed.dim2, parsed.dim3, parsed.dim4, parsed.material, parsed.aplicacao].some(
+    (v) => v != null && (typeof v !== 'string' || v.length > 0)
+  );
+  if (keywords.length === 0 && !hasStructured) return [];
 
-  // 5) Monta a cláusula AND CTU LIKE '%TERMO%' para TODOS os termos (interseção obrigatória).
-  const conditions: Prisma.Sql[] = keywords.map((term) => {
-    const pattern = `%${term}%`;
-    return Prisma.sql`LOWER(CTU) LIKE LOWER(${pattern})`;
-  });
+  // 3) Condições WHERE: base + dim1..dim4 + Material + Aplicacao + CTU
+  const parts: Prisma.Sql[] = [];
 
-  let whereCTU = conditions[0];
-  for (let i = 1; i < conditions.length; i += 1) {
-    whereCTU = Prisma.sql`${whereCTU} AND ${conditions[i]}`;
+  if (parsed.dim1 != null) parts.push(Prisma.sql`dim1 = ${parsed.dim1}`);
+  if (parsed.dim2 != null) parts.push(Prisma.sql`dim2 = ${parsed.dim2}`);
+  if (parsed.dim3 != null) parts.push(Prisma.sql`dim3 = ${parsed.dim3}`);
+  if (parsed.dim4 != null) parts.push(Prisma.sql`dim4 = ${parsed.dim4}`);
+  if (parsed.material != null && parsed.material.length > 0) {
+    parts.push(Prisma.sql`LOWER(Material) LIKE LOWER(${'%' + parsed.material + '%'})`);
+  }
+  if (parsed.aplicacao != null && parsed.aplicacao.length > 0) {
+    parts.push(Prisma.sql`LOWER(Aplicacao) LIKE LOWER(${'%' + parsed.aplicacao + '%'})`);
+  }
+
+  for (const term of keywords) {
+    parts.push(Prisma.sql`LOWER(CTU) LIKE LOWER(${'%' + term + '%'})`);
+  }
+
+  let whereClause = parts[0];
+  for (let i = 1; i < parts.length; i += 1) {
+    whereClause = Prisma.sql`${whereClause} AND ${parts[i]}`;
   }
 
   try {
@@ -482,7 +550,7 @@ export async function buscarProdutosPrisma(
         ipi: unknown;
       }>
     >(
-      Prisma.sql`SELECT id, Codigo AS codigo, Descricao AS descricao, dim1, dim2, dim3, dim4, Material AS material, Unidade AS unidade, Aplicacao AS aplicacao, Estoque AS estoque, PrecoUnitario AS precoUnitario, IPI AS ipi FROM Produtos WHERE id_emitente = ${idEmit} AND Ativo = 1 AND ${whereCTU}`
+      Prisma.sql`SELECT id, Codigo AS codigo, Descricao AS descricao, dim1, dim2, dim3, dim4, Material AS material, Unidade AS unidade, Aplicacao AS aplicacao, Estoque AS estoque, PrecoUnitario AS precoUnitario, IPI AS ipi FROM Produtos WHERE id_emitente = ${idEmit} AND Ativo = 1 AND ${whereClause}`
     );
 
     // Não listar produtos de linhas bloqueadas em nenhuma pesquisa.

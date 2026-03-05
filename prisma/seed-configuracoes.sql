@@ -16,7 +16,7 @@ INSERT INTO Configuracoes (Chave, Valor) VALUES
   (N'msg_linha_indisponivel', N'Essa linha de produto é de venda exclusiva, não está disponível.'),
   (N'msg_sucesso_busca_linha', N'Encontrei {n} produto(s). Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar os produtos ao pedido.'),
   (N'msg_sucesso_busca_codigo', N'Produto(s) encontrado(s). Informe as quantidades e digite "pedir" para adicionar ao pedido.'),
-  (N'msg_pedir_especificacoes', N'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" antes das dimensões (ex.: medida 140 170), "perf" antes do perfil (ex.: perf BAG) e "mat" antes do material ou dureza (ex.: mat NBR70). Você pode combinar com o nome do produto, por exemplo: retentor medida 140 170 perf BAG mat NBR70.'),
+  (N'msg_pedir_especificacoes', N'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" ou d1/d2/d3/d4 antes das dimensões (ex.: medida 140 170 ou d1 140 d2 170), "perf" antes do perfil (ex.: perf BAG), "mat" antes do material (ex.: mat NBR70) e "apli" antes da aplicação (ex.: apli motor). Exemplo completo: retentor d1 140 d2 170 perf BAG mat NBR70 apli eixo.'),
   (N'msg_sucesso_busca_descricao', N'Encontrei {n} produto(s). Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar os produtos ao pedido.'),
   (N'msg_nenhum_resultado', N'Não encontrei nada com essa busca. Pode tentar com o código, a descrição ou as medidas do produto.');
 
@@ -30,7 +30,7 @@ USING (
   UNION ALL SELECT N'msg_linha_indisponivel', N'Essa linha de produto é de venda exclusiva, não está disponível.'
   UNION ALL SELECT N'msg_sucesso_busca_linha', N'Encontrei {n} produto(s). Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar os produtos ao pedido.'
   UNION ALL SELECT N'msg_sucesso_busca_codigo', N'Produto(s) encontrado(s). Informe as quantidades e digite "pedir" para adicionar ao pedido.'
-  UNION ALL SELECT N'msg_pedir_especificacoes', N'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" antes das dimensões (ex.: medida 140 170), "perf" antes do perfil (ex.: perf BAG) e "mat" antes do material ou dureza (ex.: mat NBR70). Você pode combinar com o nome do produto, por exemplo: retentor medida 140 170 perf BAG mat NBR70.'
+  UNION ALL SELECT N'msg_pedir_especificacoes', N'Para eu encontrar o produto certo, monte a pesquisa assim: use "medida" ou d1/d2/d3/d4 antes das dimensões (ex.: medida 140 170 ou d1 140 d2 170), "perf" antes do perfil (ex.: perf BAG), "mat" antes do material (ex.: mat NBR70) e "apli" antes da aplicação (ex.: apli motor). Exemplo completo: retentor d1 140 d2 170 perf BAG mat NBR70 apli eixo.'
   UNION ALL SELECT N'msg_sucesso_busca_descricao', N'Encontrei {n} produto(s). Informe as quantidades dos produtos desejados, e ao final digite "pedir" para adicionar os produtos ao pedido.'
   UNION ALL SELECT N'msg_nenhum_resultado', N'Não encontrei nada com essa busca. Pode tentar com o código, a descrição ou as medidas do produto.'
 ) AS source (Chave, Valor)
